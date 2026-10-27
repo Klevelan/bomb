@@ -21,8 +21,8 @@
   // their speed), mistake = chance of a random step instead of a smart one, hunt = whether they
   // chase and bomb players at all, aim = chance they take a shot at a player when one lines up.
   const DIFF = {
-    easy:   { think: 500, mistake: 0.3,  hunt: false, aim: 0 },
-    medium: { think: 340, mistake: 0.15, hunt: true,  aim: 0.3 },
+    easy:   { think: 500, mistake: 0.4,  hunt: false, aim: 0 },
+    medium: { think: 340, mistake: 0.25, hunt: true,  aim: 0.3 },
     hard:   { think: 90,  mistake: 0,    hunt: true,  aim: 1 },
   };
 
