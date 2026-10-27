@@ -54,6 +54,9 @@
       lastMove: -1e9, nextThink: 0,
       isBot: !!s.isBot,
       input: null, // held direction for humans
+      skin: s.skin || 'classic',
+      bombFx: s.bomb || 'classic',
+      crates: 0, kills: 0, // for coin rewards
     }));
     return {
       mode, difficulty, grid: makeGrid(), players,
@@ -88,6 +91,22 @@
     return true;
   }
 
+  const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+  const canStep = (G, x, y, dir) => walkable(G, x + DIRS[dir][0], y + DIRS[dir][1]);
+
+  // Human movement with turn assist: if you steer into a turn one tile early (the way is still
+  // blocked by a pillar), keep running the way you were going and take the turn as soon as it opens.
+  function moveHuman(G, p, now) {
+    let dir = p.input;
+    const m = p.moveDir;
+    if (m && m !== dir && OPPOSITE[m] !== dir && !canStep(G, p.x, p.y, dir) && canStep(G, p.x, p.y, m)) {
+      const nx = p.x + DIRS[m][0], ny = p.y + DIRS[m][1];
+      if (canStep(G, nx, ny, dir)) dir = m;
+    }
+    if (tryMove(G, p, dir, now)) p.moveDir = dir;
+    else if (now - p.lastMove >= moveCooldown(p)) { p.facing = p.input; if (dir === p.input) p.moveDir = null; }
+  }
+
   function placeBomb(G, p) {
     if (!p || !p.alive || G.status !== 'playing') return false;
     if (bombAt(G, p.x, p.y) || activeBombs(G, p) >= p.maxBombs) return false;
@@ -95,10 +114,10 @@
     return true;
   }
 
-  function addBlast(G, x, y, drop) {
+  function addBlast(G, x, y, drop, owner) {
     const e = G.explosions.find((e) => e.x === x && e.y === y);
-    if (e) { e.left = BLAST_MS; if (drop) e.drop = drop; }
-    else G.explosions.push({ x, y, left: BLAST_MS, drop: drop || null });
+    if (e) { e.left = BLAST_MS; e.owner = owner; if (drop) e.drop = drop; }
+    else G.explosions.push({ x, y, left: BLAST_MS, drop: drop || null, owner });
     const k = G.powerups.findIndex((u) => u.x === x && u.y === y);
     if (k >= 0) G.powerups.splice(k, 1);
     const b = bombAt(G, x, y);
@@ -107,7 +126,8 @@
 
   function detonate(G, b) {
     G.bombs.splice(G.bombs.indexOf(b), 1);
-    addBlast(G, b.x, b.y);
+    const owner = G.players[b.owner];
+    addBlast(G, b.x, b.y, null, b.owner);
     for (const d of DIR_LIST) {
       const [dx, dy] = DIRS[d];
       for (let i = 1; i <= b.range; i++) {
@@ -116,11 +136,12 @@
         if (v === WALL) break;
         if (v === BOX) {
           G.grid[idx(x, y)] = FLOOR;
-          addBlast(G, x, y, Math.random() < DROP_CHANCE ? KINDS[(Math.random() * 3) | 0] : null);
+          if (owner) owner.crates++;
+          addBlast(G, x, y, Math.random() < DROP_CHANCE ? KINDS[(Math.random() * 3) | 0] : null, b.owner);
           break;
         }
         const hitBomb = !!bombAt(G, x, y);
-        addBlast(G, x, y);
+        addBlast(G, x, y, null, b.owner);
         if (hitBomb) break;
       }
     }
@@ -144,7 +165,9 @@
             p.nextThink = now + DIFF[G.difficulty].think * (0.7 + Math.random() * 0.6);
           }
         } else if (p.input) {
-          tryMove(G, p, p.input, now);
+          moveHuman(G, p, now);
+        } else {
+          p.moveDir = null;
         }
       }
     }
@@ -161,7 +184,13 @@
     });
 
     for (const p of G.players) {
-      if (p.alive && G.explosions.some((e) => e.x === p.x && e.y === p.y)) p.alive = false;
+      if (!p.alive) continue;
+      const e = G.explosions.find((e) => e.x === p.x && e.y === p.y);
+      if (e) {
+        p.alive = false;
+        const killer = G.players[e.owner];
+        if (killer && killer !== p) killer.kills++;
+      }
     }
 
     const alive = G.players.filter((p) => p.alive);
@@ -192,9 +221,10 @@
       players: G.players.map((p) => ({
         seat: p.seat, name: p.name, color: p.color, x: p.x, y: p.y, alive: p.alive, facing: p.facing,
         speed: p.speed, maxBombs: p.maxBombs, range: p.range, isBot: p.isBot,
+        skin: p.skin, bombFx: p.bombFx, crates: p.crates, kills: p.kills,
       })),
       bombs: G.bombs.map((b) => ({ x: b.x, y: b.y, owner: b.owner, left: Math.round(b.left) })),
-      explosions: G.explosions.map((e) => ({ x: e.x, y: e.y, left: Math.round(e.left) })),
+      explosions: G.explosions.map((e) => ({ x: e.x, y: e.y, owner: e.owner, left: Math.round(e.left) })),
       powerups: G.powerups.map((u) => ({ x: u.x, y: u.y, kind: u.kind })),
     };
   }

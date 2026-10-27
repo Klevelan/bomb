@@ -1,8 +1,8 @@
 // Service worker: makes the app installable and lets solo / local play work offline.
 // Network first (so updates show up straight away), falling back to the cached copy.
-const CACHE = 'bombroom-v1';
+const CACHE = 'bombroom-v3';
 const ASSETS = [
-  './', 'index.html', 'app.js', 'game.js', 'render.js', 'config.js', 'manifest.webmanifest',
+  './', 'index.html', 'app.js', 'game.js', 'render.js', 'config.js', 'cosmetics.js', 'profile.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 

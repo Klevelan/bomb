@@ -29,7 +29,7 @@
   /* ---------------- Screens & toast ---------------- */
   let screen = 'menu';
   function show(id) {
-    for (const s of ['menu', 'lobby', 'game']) $(s).classList.toggle('hidden', s !== id);
+    for (const s of ['menu', 'shop', 'lobby', 'game']) $(s).classList.toggle('hidden', s !== id);
     screen = id;
   }
   let toastTimer;
@@ -80,7 +80,7 @@
       net.open = true;
       net.retry = 0;
       setStatus('Online', 'on');
-      ws.send(JSON.stringify({ type: 'hello', id: clientId, name: myName() }));
+      ws.send(JSON.stringify({ type: 'hello', id: clientId, name: myName(), look: Profile.look() }));
       const q = net.queue; net.queue = [];
       for (const m of q) ws.send(JSON.stringify(m));
       if (net.sentDir) ws.send(JSON.stringify({ type: 'input', dir: net.sentDir }));
@@ -200,6 +200,87 @@
   $('joinBtn').addEventListener('click', joinCode);
   codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinCode(); });
 
+  /* ---------------- Coins & shop ---------------- */
+  const Cos = window.Cosmetics;
+  const randomSkin = () => Cos.SKINS[(Math.random() * Cos.SKINS.length) | 0].id;
+
+  let shownCoins = Profile.coins;
+  function renderCoins() {
+    const bumped = Profile.coins > shownCoins;
+    shownCoins = Profile.coins;
+    for (const id of ['menuCoins', 'shopCoins']) {
+      const el = $(id);
+      el.querySelector('.amt').textContent = Profile.coins.toLocaleString('en-US');
+      if (bumped) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+    }
+  }
+  Profile.onChange(() => { renderCoins(); if (screen === 'shop') renderShop(); });
+  renderCoins();
+
+  let shopKind = 'skin';
+  let previews = []; // { canvas, ctx, kind, id }
+  const SHOP_NOTES = {
+    skin: 'Other players see your character in online matches.',
+    bomb: 'Your bombs and blasts use this effect, and other players see it online.',
+    map: 'Map themes change how the arena looks on your screen.',
+  };
+
+  function renderShop() {
+    document.querySelectorAll('#shopTabs button').forEach((b) => b.classList.toggle('on', b.dataset.k === shopKind));
+    const items = Cos.CATALOG[shopKind];
+    const eq = Profile.equipped(shopKind);
+    $('items').innerHTML = items.map((it) => {
+      const owned = Profile.owns(shopKind, it.id);
+      let btn;
+      if (owned && it.id === eq) btn = '<button class="btn equipped-btn" disabled>Equipped</button>';
+      else if (owned) btn = `<button class="btn owned" data-act="equip" data-id="${it.id}">Equip</button>`;
+      else btn = `<button class="btn" data-act="buy" data-id="${it.id}" ${Profile.coins < it.price ? 'disabled' : ''}><span class="coin"></span>${it.price.toLocaleString('en-US')}</button>`;
+      const tag = owned ? '<small>Owned</small>' : '';
+      return `<div class="item${it.id === eq ? ' equipped' : ''}"><canvas data-id="${it.id}"></canvas><div class="nm">${esc(it.name)}${tag}</div>${btn}</div>`;
+    }).join('');
+    previews = [...$('items').querySelectorAll('canvas')].map((c) => ({ canvas: c, ctx: c.getContext('2d'), kind: shopKind, id: c.dataset.id }));
+    const cheapest = items.filter((i) => !Profile.owns(shopKind, i.id)).sort((a, b) => a.price - b.price)[0];
+    let note = SHOP_NOTES[shopKind];
+    if (cheapest && cheapest.price > Profile.coins) note += ` ${cheapest.price - Profile.coins} more coins unlocks ${cheapest.name}.`;
+    $('shopNote').textContent = note;
+  }
+
+  function drawPreviews(now) {
+    const dpr = window.devicePixelRatio || 1;
+    for (const p of previews) {
+      const size = p.canvas.clientWidth;
+      if (!size) continue;
+      const px = Math.round(size * dpr);
+      if (p.canvas.width !== px) { p.canvas.width = px; p.canvas.height = px; }
+      p.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      window.drawPreview(p.ctx, size, p.kind, p.id, now);
+    }
+  }
+
+  $('items').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    const id = b.dataset.id;
+    const item = Cos.byId(shopKind, id);
+    if (b.dataset.act === 'buy') {
+      const res = Profile.buy(shopKind, id);
+      if (!res.ok) { toast(res.reason); return; }
+      toast(`Unlocked ${item.name}!`);
+      if (navigator.vibrate) { try { navigator.vibrate([20, 40, 20]); } catch (err) {} }
+    } else {
+      Profile.equip(shopKind, id);
+    }
+    if (shopKind !== 'map') netSend({ type: 'look', ...Profile.look() });
+  });
+  $('shopTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-k]');
+    if (!b) return;
+    shopKind = b.dataset.k;
+    renderShop();
+  });
+  $('shopBtn').addEventListener('click', () => { renderShop(); show('shop'); });
+  $('shopBack').addEventListener('click', () => { previews = []; show('menu'); });
+
   /* ---------------- Lobby ---------------- */
   const lobbySeg = $('lobbyDiff');
   lobbySeg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
@@ -285,9 +366,11 @@
     if (kind === 'online') leaveOnline();
     kind = k;
     const now = performance.now();
+    const look = Profile.look();
+    const bot = (n) => ({ name: `Bot ${n}`, isBot: true, skin: randomSkin() });
     const seats = k === 'solo'
-      ? [{ name: 'You' }, { name: 'Bot 1', isBot: true }, { name: 'Bot 2', isBot: true }, { name: 'Bot 3', isBot: true }]
-      : [{ name: 'P1' }, { name: 'P2' }];
+      ? [{ name: 'You', skin: look.skin, bomb: look.bomb }, bot(1), bot(2), bot(3)]
+      : [{ name: 'P1', skin: look.skin, bomb: look.bomb }, { name: 'P2' }];
     G = BG.createGame({ mode: k, difficulty: soloDiff, seats, now });
     meSeat = k === 'solo' ? 0 : -1;
     clearHeld();
@@ -338,10 +421,11 @@
   let overlayShown = false;
   function hideOverlay() { overlayShown = false; $('overlay').classList.add('hidden'); }
 
-  function openOverlay(title, sub, { canAgain, toLobby, leaveText }) {
+  function openOverlay(title, sub, { canAgain, toLobby, leaveText, reward }) {
     overlayShown = true;
     $('resultText').textContent = title;
     $('resultSub').textContent = sub;
+    showReward(reward);
     $('againBtn').classList.toggle('hidden', !canAgain);
     $('toLobbyBtn').classList.toggle('hidden', !toLobby);
     $('overlayLeave').textContent = leaveText;
@@ -351,24 +435,28 @@
 
   function showLocalResult() {
     if (overlayShown) return;
-    let title, sub;
+    let title, sub, reward;
     if (G.mode === 'solo') {
-      const won = G.players[0].alive;
+      const me = G.players[0];
+      const won = me.alive && G.winner === 0;
       title = won ? 'You win!' : 'Blown up';
       sub = won ? `Cleared the room on ${G.difficulty}.` : (G.winner !== null ? `${G.players[G.winner].name} takes it.` : 'Better luck next round.');
+      reward = Profile.award({ mode: 'solo', difficulty: G.difficulty, won, crates: me.crates, kills: me.kills });
     } else {
       title = G.winner === null ? 'Draw' : `${G.players[G.winner].name} wins!`;
       sub = G.winner === null ? 'Both went down together.' : 'Last one standing.';
+      reward = Profile.award({ mode: 'local', won: G.winner !== null });
     }
-    openOverlay(title, sub, { canAgain: true, toLobby: false, leaveText: 'Menu' });
+    openOverlay(title, sub, { canAgain: true, toLobby: false, leaveText: 'Menu', reward });
   }
 
+  let lastOnlineReward = { key: null, reward: null };
   function showOnlineResult() {
     const s = net.snap;
     const r = net.room;
     if (!r) return;
     const isHost = r.hostId === clientId;
-    let title = 'Round over', sub = '';
+    let title = 'Round over', sub = '', reward = null;
     if (s) {
       const w = s.winner;
       if (w === null) title = 'Draw';
@@ -377,9 +465,41 @@
       if (meSeat < 0) sub = 'You play next round.';
       else if (w !== meSeat) sub = 'Better luck next round.';
       else sub = 'Last one standing.';
+
+      // Pay out once per round (the results screen can be redrawn when people join or leave).
+      const key = `${r.code}:${s.round}`;
+      if (lastOnlineReward.key === key) reward = lastOnlineReward.reward;
+      else if (meSeat >= 0 && s.players[meSeat]) {
+        const me = s.players[meSeat];
+        reward = Profile.award({
+          key, mode: 'online', won: w === meSeat, crates: me.crates, kills: me.kills,
+          humanOpponents: s.players.filter((p) => !p.isBot && p.seat !== meSeat).length,
+        });
+        lastOnlineReward = { key, reward };
+      }
     }
     sub += isHost ? '' : ' Waiting for the host…';
-    openOverlay(title, sub.trim(), { canAgain: isHost, toLobby: isHost, leaveText: 'Leave' });
+    openOverlay(title, sub.trim(), { canAgain: isHost, toLobby: isHost, leaveText: 'Leave', reward });
+  }
+
+  // Coin breakdown with a quick count-up.
+  let countTimer = null;
+  function showReward(reward) {
+    const box = $('reward');
+    clearInterval(countTimer);
+    if (!reward) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    $('rewardLines').innerHTML = reward.lines.map(([label, n]) =>
+      `<div class="${/today/.test(label) ? 'bonus' : ''}"><b>${esc(label)}</b><span>+${n}</span></div>`).join('');
+    const totalEl = $('rewardTotal');
+    let shown = 0;
+    const step = Math.max(1, Math.ceil(reward.total / 25));
+    totalEl.textContent = '+0';
+    countTimer = setInterval(() => {
+      shown = Math.min(reward.total, shown + step);
+      totalEl.textContent = `+${shown}`;
+      if (shown >= reward.total) clearInterval(countTimer);
+    }, 30);
   }
   $('overlayLeave').addEventListener('click', toMenu);
   $('againBtn').addEventListener('click', again);
@@ -390,7 +510,11 @@
   const heldDir = (seat) => { const h = held[seat]; return h && h.length ? h[h.length - 1] : null; };
   function press(seat, dir) { const h = held[seat]; if (!h.includes(dir)) h.push(dir); syncInput(); }
   function release(seat, dir) { const h = held[seat]; const i = h.indexOf(dir); if (i >= 0) h.splice(i, 1); syncInput(); }
-  function clearHeld() { held[0].length = 0; held[1].length = 0; syncInput(); }
+  function clearHeld() {
+    held[0].length = 0; held[1].length = 0;
+    if (stickId !== null || stickDir) resetStick(); // eslint-disable-line no-use-before-define
+    syncInput();
+  }
   function syncInput() {
     if (kind !== 'online') return;
     const d = heldDir(0);
@@ -439,34 +563,68 @@
     else if (!net.ws && serverUrl()) { net.retry = 0; connect(); }
   });
 
-  // Touch d-pad: slide your thumb between directions without lifting it.
-  const dpad = document.querySelector('.dpad');
-  let dpadPointer = null;
-  function dpadDir(e) {
-    const r = dpad.getBoundingClientRect();
-    const dx = e.clientX - (r.left + r.width / 2);
-    const dy = e.clientY - (r.top + r.height / 2);
-    if (Math.hypot(dx, dy) < 12) return null;
-    return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+  // Floating joystick: put your thumb down anywhere in the zone and slide to steer.
+  // The base follows your thumb if you drag past the edge, so reversing direction is instant.
+  const zone = $('stickZone'), stick = $('stick'), knob = $('knob');
+  const STICK_R = 42;     // how far the knob travels from the centre (px)
+  const DEAD = 12;        // ignore tiny movements around the centre
+  const SWITCH = 1.3;     // must lean this much more toward the new axis to change axis (stops jitter on diagonals)
+  let stickId = null, stickDir = null, base = { x: 0, y: 0 };
+
+  function pickDir(dx, dy, cur) {
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    if (Math.hypot(dx, dy) < DEAD) return null;
+    const horiz = dx > 0 ? 'right' : 'left', vert = dy > 0 ? 'down' : 'up';
+    if (cur === 'left' || cur === 'right') return ay > ax * SWITCH ? vert : horiz;
+    if (cur === 'up' || cur === 'down') return ax > ay * SWITCH ? horiz : vert;
+    return ax > ay ? horiz : vert;
   }
-  function setDpad(dir) {
+  function setStickDir(d) {
+    if (d === stickDir) return;
+    stickDir = d;
     held[0].length = 0;
-    if (dir) held[0].push(dir);
-    dpad.querySelectorAll('button').forEach((b) => b.classList.toggle('down', b.dataset.dir === dir));
+    if (d) held[0].push(d);
     syncInput();
+    if (d && navigator.vibrate) { try { navigator.vibrate(6); } catch (e) {} }
   }
-  dpad.style.touchAction = 'none';
-  dpad.addEventListener('pointerdown', (e) => {
+  function zonePoint(e) {
+    const r = zone.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function placeStick() { stick.style.left = base.x + 'px'; stick.style.top = base.y + 'px'; }
+  function resetStick() {
+    stickId = null;
+    stick.classList.remove('active');
+    stick.style.left = ''; stick.style.top = '';
+    knob.style.transform = '';
+    setStickDir(null);
+  }
+  zone.addEventListener('pointerdown', (e) => {
+    if (stickId !== null) return;
     e.preventDefault();
-    dpadPointer = e.pointerId;
-    try { dpad.setPointerCapture(e.pointerId); } catch (err) {}
-    setDpad(dpadDir(e));
+    stickId = e.pointerId;
+    try { zone.setPointerCapture(e.pointerId); } catch (err) {}
+    base = zonePoint(e);
+    placeStick();
+    knob.style.transform = '';
+    stick.classList.add('active');
   });
-  dpad.addEventListener('pointermove', (e) => { if (e.pointerId === dpadPointer) setDpad(dpadDir(e)); });
-  ['pointerup', 'pointercancel'].forEach((t) => dpad.addEventListener(t, (e) => {
-    if (e.pointerId !== dpadPointer) return;
-    dpadPointer = null;
-    setDpad(null);
+  zone.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== stickId) return;
+    const p = zonePoint(e);
+    let dx = p.x - base.x, dy = p.y - base.y;
+    const d = Math.hypot(dx, dy);
+    if (d > STICK_R) {
+      base.x = p.x - (dx / d) * STICK_R;
+      base.y = p.y - (dy / d) * STICK_R;
+      placeStick();
+      dx = (dx / d) * STICK_R; dy = (dy / d) * STICK_R;
+    }
+    knob.style.transform = `translate(${dx}px, ${dy}px)`;
+    setStickDir(pickDir(dx, dy, stickDir));
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((t) => zone.addEventListener(t, (e) => {
+    if (e.pointerId === stickId) resetStick();
   }));
   $('bombBtn').addEventListener('pointerdown', (e) => { e.preventDefault(); doBomb(0); });
 
@@ -530,7 +688,7 @@
       const px = Math.round(size * dpr);
       if (px > 0 && canvas.width !== px) { canvas.width = px; canvas.height = px; }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      window.drawBoard(ctx, size, view, now, meSeat);
+      window.drawBoard(ctx, size, view, now, meSeat, Profile.equipped('map'));
 
       if (view) {
         renderHud(view.players);
@@ -544,6 +702,8 @@
       } else {
         setBanner(kind === 'online' ? 'Loading match…' : '', true);
       }
+    } else if (screen === 'shop') {
+      drawPreviews(now);
     }
     requestAnimationFrame(frame);
   }

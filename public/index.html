@@ -123,11 +123,19 @@
   .hint { color: var(--muted); font-size: 12px; text-align: center; }
 
   /* Touch controls (phones/tablets) */
-  .touch { display: none; align-items: center; justify-content: space-between; padding: 0 6px; }
-  .dpad { display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(3, 52px); gap: 3px; }
-  .dpad button { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 14px; font-size: 20px; touch-action: none; }
-  .dpad button.down { background: var(--raise); }
-  .bombBtn { width: 92px; height: 92px; border-radius: 50%; background: var(--primary); color: var(--primary-fg);
+  .touch { display: none; align-items: stretch; gap: 10px; height: 176px; }
+  /* Floating joystick: touch anywhere in the zone, then slide to steer. */
+  .stick-zone { flex: 1; position: relative; border-radius: 20px; border: 1px dashed var(--line);
+    background: rgba(255,255,255,.015); touch-action: none; }
+  .stick { position: absolute; left: 50%; top: 50%; width: 116px; height: 116px; margin: -58px 0 0 -58px;
+    border-radius: 50%; background: rgba(255,255,255,.04); border: 1px solid var(--line);
+    pointer-events: none; opacity: .55; transition: opacity .15s, left .15s, top .15s; }
+  .stick.active { opacity: 1; transition: none; background: rgba(255,255,255,.07); }
+  .knob { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%;
+    background: var(--raise); border: 1px solid #3A4558; box-shadow: 0 4px 14px rgba(0,0,0,.45); }
+  .stick.active .knob { background: #2A3446; border-color: #4A5870; }
+  .stick-hint { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font-size: 11px; color: var(--muted); pointer-events: none; }
+  .bombBtn { align-self: center; width: 100px; height: 100px; flex: none; border-radius: 50%; background: var(--primary); color: var(--primary-fg);
     font: inherit; font-weight: 800; font-size: 15px; border: 0; touch-action: none; }
   .bombBtn:disabled { opacity: .4; }
   .bombBtn:not(:disabled):active { transform: scale(.96); }
@@ -144,6 +152,40 @@
     padding: 16px; background: rgba(5,7,10,.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
   .overlay .card { align-items: center; text-align: center; gap: 12px; padding: 24px 18px; }
   .result { font-size: 30px; font-weight: 800; }
+
+  /* Coins */
+  .coin { display: inline-block; width: 1em; height: 1em; border-radius: 50%; vertical-align: -0.14em; flex: none;
+    background: radial-gradient(circle at 35% 30%, #FFF0A8, #FFC53D 45%, #D9921A 100%); box-shadow: inset 0 0 0 0.09em #B9821A; }
+  .coins-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 12px; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; min-width: 70px; justify-content: center; }
+  .coins-chip.bump { animation: bump .45s ease; }
+  @keyframes bump { 40% { transform: scale(1.15); } }
+  .shop-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .shop-row .muted { font-size: 12px; }
+
+  /* Shop */
+  .shop main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px 16px 28px; }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--panel2); padding: 4px; border-radius: 14px; width: 100%; max-width: 560px; border: 1px solid var(--line); }
+  .tabs button { border: 0; background: transparent; color: var(--muted); padding: 10px 0; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .tabs button.on { background: var(--raise); color: var(--fg); }
+  .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; width: 100%; max-width: 560px; }
+  .item { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .item.equipped { border-color: rgba(255,122,77,.6); box-shadow: 0 0 0 1px rgba(255,122,77,.25) inset; }
+  .item canvas { width: 100%; aspect-ratio: 1; border-radius: 10px; box-shadow: none; }
+  .item .nm { font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .item .nm small { color: var(--muted); font-weight: 600; font-size: 11px; }
+  .item .btn { padding: 9px 10px; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .item .btn.owned { background: var(--raise); color: var(--fg); }
+  .item .btn.equipped-btn { background: transparent; color: var(--primary); border: 1px solid rgba(255,122,77,.4); opacity: 1; }
+  .shop-note { max-width: 560px; text-align: center; }
+
+  /* Reward on results */
+  .reward { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .reward-total { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 26px; font-weight: 800; color: #FFD25A; font-variant-numeric: tabular-nums; }
+  .reward-lines { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); }
+  .reward-lines div { display: flex; justify-content: space-between; }
+  .reward-lines b { color: var(--fg); font-weight: 600; }
+  .reward-lines .bonus b, .reward-lines .bonus span { color: #FFD25A; }
 
   /* Toast */
   .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
@@ -165,6 +207,10 @@
   <div class="card">
     <h2>Your name</h2>
     <input id="nameInput" class="field" maxlength="16" placeholder="Player" autocomplete="nickname" />
+    <div class="shop-row">
+      <span class="coins-chip" id="menuCoins"><span class="coin"></span><span class="amt">0</span></span>
+      <button class="btn ghost" id="shopBtn">Shop</button>
+    </div>
   </div>
 
   <div class="card">
@@ -201,6 +247,24 @@
     <span id="installText"></span>
     <div><button class="btn ghost hidden" id="installBtn">Install app</button></div>
   </div>
+</section>
+
+<!-- ============ Shop ============ -->
+<section id="shop" class="screen shop hidden">
+  <header>
+    <button class="exit" id="shopBack">‹ Back</button>
+    <span class="label">Shop</span>
+    <span class="coins-chip" id="shopCoins"><span class="coin"></span><span class="amt">0</span></span>
+  </header>
+  <main>
+    <div class="tabs" id="shopTabs">
+      <button data-k="skin" class="on">Characters</button>
+      <button data-k="bomb">Bombs</button>
+      <button data-k="map">Maps</button>
+    </div>
+    <div class="items" id="items"></div>
+    <p class="muted shop-note" id="shopNote"></p>
+  </main>
 </section>
 
 <!-- ============ Lobby ============ -->
@@ -252,10 +316,9 @@
     <div class="wrap">
       <p class="hint" id="hint"></p>
       <div class="touch">
-        <div class="dpad">
-          <span></span><button data-dir="up" aria-label="Up">▲</button><span></span>
-          <button data-dir="left" aria-label="Left">◀</button><span></span><button data-dir="right" aria-label="Right">▶</button>
-          <span></span><button data-dir="down" aria-label="Down">▼</button><span></span>
+        <div class="stick-zone" id="stickZone">
+          <div class="stick" id="stick"><div class="knob" id="knob"></div></div>
+          <span class="stick-hint">Touch and slide to move</span>
         </div>
         <button class="bombBtn" id="bombBtn">BOMB</button>
       </div>
@@ -268,6 +331,10 @@
   <div class="card">
     <div class="result" id="resultText"></div>
     <p class="sub" id="resultSub"></p>
+    <div class="reward hidden" id="reward">
+      <div class="reward-total"><span class="coin"></span><span id="rewardTotal">+0</span></div>
+      <div class="reward-lines" id="rewardLines"></div>
+    </div>
     <div class="row">
       <button class="btn ghost grow" id="overlayLeave">Menu</button>
       <button class="btn grow" id="againBtn">Play again</button>
@@ -281,6 +348,8 @@
 
 <script src="config.js"></script>
 <script src="game.js"></script>
+<script src="cosmetics.js"></script>
+<script src="profile.js"></script>
 <script src="render.js"></script>
 <script src="app.js"></script>
 </body>
