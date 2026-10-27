@@ -64,14 +64,18 @@
 
   // Floor and walls rarely change (only when the arena closes in), so draw them once
   // per size/theme/layout/wall-change and reuse.
+  // One canvas is reused for this: phones (iPhones especially) only allow a limited total amount
+  // of canvas memory and are slow to free old canvases, so making a new one each time runs out.
   let bgCache = { key: '', canvas: null };
   function background(size, dpr, T, grid, wallKey) {
     const key = `${size}|${dpr}|${T.id}|${wallKey}`;
     if (bgCache.key === key) return bgCache.canvas;
-    const c = document.createElement('canvas');
-    c.width = Math.round(size * dpr); c.height = Math.round(size * dpr);
+    const c = bgCache.canvas || document.createElement('canvas');
+    const px = Math.round(size * dpr);
+    if (c.width !== px) { c.width = px; c.height = px; } else c.getContext('2d').setTransform(1, 0, 0, 1, 0, 0);
     const g = c.getContext('2d');
-    g.scale(dpr, dpr);
+    g.clearRect(0, 0, px, px);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
     const cell = size / COLS;
     for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) drawFloor(g, x, y, cell, T);
     for (let y = 0; y < ROWS; y++) {

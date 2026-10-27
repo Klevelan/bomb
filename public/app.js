@@ -1,5 +1,6 @@
 // Bomb Room client: menus, online lobby, input, and the render loop.
 (function () {
+  const APP_VERSION = '10'; // shown at the bottom of the menu; bump with each update
   const BG = window.BombGame;
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');
@@ -241,6 +242,8 @@
     document.querySelectorAll('#shopTabs button').forEach((b) => b.classList.toggle('on', b.dataset.k === shopKind));
     const items = Cos.CATALOG[shopKind];
     const eq = Profile.equipped(shopKind);
+    // Free the old preview canvases right away (phones are slow to do it themselves).
+    for (const p of previews) { p.canvas.width = 0; p.canvas.height = 0; }
     $('items').innerHTML = items.map((it) => {
       const owned = Profile.owns(shopKind, it.id);
       let btn;
@@ -261,11 +264,11 @@
     const dpr = window.devicePixelRatio || 1;
     for (const p of previews) {
       const size = p.canvas.clientWidth;
-      if (!size) continue;
+      if (!size || !p.ctx) continue;
       const px = Math.round(size * dpr);
       if (p.canvas.width !== px) { p.canvas.width = px; p.canvas.height = px; }
       p.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      window.drawPreview(p.ctx, size, p.kind, p.id, now);
+      try { window.drawPreview(p.ctx, size, p.kind, p.id, now); } catch (e) { reportDrawError(e, 'shop preview ' + p.id); }
     }
   }
 
@@ -750,8 +753,21 @@
   }
 
   /* ---------------- Main loop ---------------- */
+  // If drawing ever fails on a device, show the error once (so it can be reported) and keep going.
+  let drawErrorShown = false;
+  function reportDrawError(e, where) {
+    console.error('Draw error in', where, e);
+    if (drawErrorShown) return;
+    drawErrorShown = true;
+    toast(`Display error (${where}): ${e && e.message ? e.message : e} · v${APP_VERSION}`);
+  }
+
   let last = performance.now();
   function frame(now) {
+    try { frameBody(now); } catch (e) { reportDrawError(e, screen); }
+    requestAnimationFrame(frame);
+  }
+  function frameBody(now) {
     const dt = Math.min(50, now - last);
     last = now;
 
@@ -819,7 +835,6 @@
     } else if (screen === 'shop') {
       drawPreviews(now);
     }
-    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
@@ -956,6 +971,8 @@
   document.addEventListener('dblclick', (e) => e.preventDefault());
 
   /* ---------------- Start up ---------------- */
+  const vEl = document.getElementById('appVersion');
+  if (vEl) vEl.textContent = `Version ${APP_VERSION}`;
   const params = new URLSearchParams(location.search);
   const roomParam = (params.get('room') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
   if (serverUrl()) connect(); else setStatus('No server', 'off');
