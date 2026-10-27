@@ -128,7 +128,10 @@
     };
   }
 
-  const moveCooldown = (p) => Math.max(80, 170 - p.speed * 22);
+  // ms per tile. Base ~5 tiles/s; each speed power-up shaves some off, down to ~8 tiles/s.
+  const moveCooldown = (p) => Math.max(120, 190 - p.speed * 18);
+  // Online, steps from a phone can arrive bunched up by the network; allow a little slack.
+  const STEP_SLACK = 60;
   const bombAt = (G, x, y) => G.bombs.find((b) => b.x === x && b.y === y);
   const inBounds = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
   const walkable = (G, x, y) => inBounds(x, y) && G.grid[idx(x, y)] === FLOOR && !bombAt(G, x, y);
@@ -140,10 +143,10 @@
     else p.range = Math.min(LIMITS.blast, p.range + 1);
   }
 
-  function tryMove(G, p, dir, now) {
+  function tryMove(G, p, dir, now, slack = 0) {
     if (!p.alive || G.status !== 'playing' || !DIRS[dir]) return false;
     p.facing = dir;
-    if (now - p.lastMove < moveCooldown(p)) return false;
+    if (now - p.lastMove < moveCooldown(p) - slack) return false;
     const [dx, dy] = DIRS[dir];
     const nx = p.x + dx, ny = p.y + dy;
     if (!walkable(G, nx, ny)) return false;
@@ -157,17 +160,31 @@
   const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
   const canStep = (G, x, y, dir) => walkable(G, x + DIRS[dir][0], y + DIRS[dir][1]);
 
-  // Human movement with turn assist: if you steer into a turn one tile early (the way is still
-  // blocked by a pillar), keep running the way you were going and take the turn as soon as it opens.
-  function moveHuman(G, p, now) {
-    let dir = p.input;
-    const m = p.moveDir;
-    if (m && m !== dir && OPPOSITE[m] !== dir && !canStep(G, p.x, p.y, dir) && canStep(G, p.x, p.y, m)) {
-      const nx = p.x + DIRS[m][0], ny = p.y + DIRS[m][1];
-      if (canStep(G, nx, ny, dir)) dir = m;
+  // Turn assist: if you steer into a turn one tile early (the way is still blocked by a pillar),
+  // keep running the way you were going and take the turn as soon as it opens.
+  // can(x, y, dir) says whether a step from (x, y) in dir is possible. Shared with the client.
+  function assistDir(can, x, y, input, moveDir) {
+    const m = moveDir;
+    if (m && m !== input && OPPOSITE[m] !== input && !can(x, y, input) && can(x, y, m)) {
+      if (can(x + DIRS[m][0], y + DIRS[m][1], input)) return m;
     }
+    return input;
+  }
+
+  function moveHuman(G, p, now) {
+    const dir = assistDir((x, y, d) => canStep(G, x, y, d), p.x, p.y, p.input, p.moveDir);
     if (tryMove(G, p, dir, now)) p.moveDir = dir;
     else if (now - p.lastMove >= moveCooldown(p)) { p.facing = p.input; if (dir === p.input) p.moveDir = null; }
+  }
+
+  // Online input: queue one tile step (or a bomb) in the order the player did them, so a bomb is
+  // dropped where the player really was. seq lets the phone match up the server's answer.
+  function queueStep(G, seat, action) {
+    const p = G.players[seat];
+    if (!p || !p.alive || G.status !== 'playing') return;
+    p.steps = p.steps || [];
+    p.steps.push(action);
+    while (p.steps.length > 4) p.ack = p.steps.shift().seq; // never fall far behind
   }
 
   function placeBomb(G, p) {
@@ -227,6 +244,15 @@
           if (now >= p.nextThink && now - p.lastMove >= moveCooldown(p)) {
             botThink(G, p, now);
             p.nextThink = now + DIFF[G.difficulty].think * (0.7 + Math.random() * 0.6);
+          }
+        } else if (p.steps && p.steps.length) {
+          // Online: the phone sends one message per tile (see queueStep).
+          const s = p.steps[0];
+          if (s.bomb) { p.steps.shift(); p.ack = s.seq; placeBomb(G, p); }
+          else if (now - p.lastMove >= moveCooldown(p) - STEP_SLACK) {
+            p.steps.shift();
+            p.ack = s.seq;
+            tryMove(G, p, s.dir, now, STEP_SLACK);
           }
         } else if (p.input) {
           moveHuman(G, p, now);
@@ -331,7 +357,7 @@
       winner: G.winner,
       players: G.players.map((p) => ({
         seat: p.seat, name: p.name, color: p.color, x: p.x, y: p.y, alive: p.alive, facing: p.facing,
-        speed: p.speed, maxBombs: p.maxBombs, range: p.range, isBot: p.isBot,
+        speed: p.speed, maxBombs: p.maxBombs, range: p.range, isBot: p.isBot, ack: p.ack || 0,
         skin: p.skin, bombFx: p.bombFx, crates: p.crates, kills: p.kills,
       })),
       bombs: G.bombs.map((b) => ({ x: b.x, y: b.y, owner: b.owner, left: Math.round(b.left) })),
@@ -491,7 +517,7 @@
 
   const api = {
     COLS, ROWS, FLOOR, WALL, BOX, BLAST_MS, STEP_ANIM, FUSE_MS, MAX_PLAYERS, DIRS, COLORS, DIFF,
-    createGame, step, tryMove, placeBomb, forfeit, snapshot, gridString, activeBombs,
+    createGame, step, tryMove, placeBomb, queueStep, assistDir, moveCooldown, forfeit, snapshot, gridString, activeBombs,
     LAYOUTS, LAYOUT_IDS, makeGrid, placements, upcomingShrink, shrinkWarning, ROUND_MS, SHRINK_MS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

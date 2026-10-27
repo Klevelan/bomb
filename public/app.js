@@ -84,7 +84,7 @@
       ws.send(JSON.stringify({ type: 'hello', id: clientId, name: myName(), look: Profile.look() }));
       const q = net.queue; net.queue = [];
       for (const m of q) ws.send(JSON.stringify(m));
-      if (net.sentDir) ws.send(JSON.stringify({ type: 'input', dir: net.sentDir }));
+      pred.pending = []; // anything unsent is gone; the server's view wins after a reconnect
     };
     ws.onmessage = (ev) => {
       let m;
@@ -155,6 +155,7 @@
     } else if (r.phase === 'playing') {
       if (prevPhase !== 'playing') {
         net.snap = null; net.grid = null; net.anim = {}; net.lastPos = {}; net.sentDir = null;
+        resetPrediction();
         hideOverlay();
       }
       if (screen !== 'game') enterGameScreen();
@@ -168,14 +169,15 @@
     if (kind !== 'online') return;
     if (s.grid) net.grid = Uint8Array.from(s.grid, (c) => c.charCodeAt(0) - 48);
     const t = performance.now();
+    meSeat = typeof s.you === 'number' ? s.you : -1;
     for (const p of s.players) {
+      if (p.seat === meSeat) continue; // your own player is animated by prediction
       const lp = net.lastPos[p.seat];
       if (lp && Math.abs(lp.x - p.x) + Math.abs(lp.y - p.y) === 1) {
         net.anim[p.seat] = { from: { x: lp.x, y: lp.y }, t0: t };
       }
       net.lastPos[p.seat] = { x: p.x, y: p.y };
     }
-    meSeat = typeof s.you === 'number' ? s.you : -1;
     net.snap = s;
     net.recvAt = t;
     if (screen !== 'game') enterGameScreen();
@@ -530,13 +532,71 @@
     if (stickId !== null || stickDir) resetStick(); // eslint-disable-line no-use-before-define
     syncInput();
   }
-  function syncInput() {
-    if (kind !== 'online') return;
-    const d = heldDir(0);
-    if (d !== net.sentDir) { net.sentDir = d; netSend({ type: 'input', dir: d }); }
+  /* ---------------- Online prediction ----------------
+     Online, the phone asks the server for one tile at a time and moves your player straight
+     away on screen. The server checks each step and answers with the last one it handled
+     (ack); anything it hasn't handled yet is replayed on top of its position. So your player
+     reacts instantly and stops the moment you let go, however slow the connection is. */
+  const pred = { seq: 0, pending: [], lastStep: -1e9, moveDir: null, shown: null };
+  function resetPrediction() {
+    pred.pending = []; pred.lastStep = -1e9; pred.moveDir = null; pred.shown = null;
   }
+  function onlineWalkable(x, y) {
+    const s = net.snap;
+    if (!net.grid || x < 0 || y < 0 || x >= BG.COLS || y >= BG.ROWS) return false;
+    if (net.grid[y * BG.COLS + x] !== BG.FLOOR) return false;
+    return !s.bombs.some((b) => b.x === x && b.y === y);
+  }
+  const onlineCan = (x, y, d) => onlineWalkable(x + BG.DIRS[d][0], y + BG.DIRS[d][1]);
+  // Server position + the steps it hasn't answered yet.
+  function predictedPos() {
+    const me = net.snap && net.snap.players[meSeat];
+    if (!me) return null;
+    pred.pending = pred.pending.filter((p) => p.seq > me.ack);
+    let x = me.x, y = me.y;
+    for (const p of pred.pending) {
+      if (p.dir && onlineCan(x, y, p.dir)) { x += BG.DIRS[p.dir][0]; y += BG.DIRS[p.dir][1]; }
+    }
+    return { x, y, facing: pred.moveDir || me.facing };
+  }
+  function predictionTick(now) {
+    const s = net.snap;
+    const me = s && s.players[meSeat];
+    if (!me || !me.alive || s.status !== 'playing') { pred.pending = []; return; }
+    const want = heldDir(0);
+    if (!want) { pred.moveDir = null; return; }
+    if (now - pred.lastStep < BG.moveCooldown(me)) return;
+    const pos = predictedPos();
+    const dir = BG.assistDir(onlineCan, pos.x, pos.y, want, pred.moveDir);
+    if (!onlineCan(pos.x, pos.y, dir)) { pred.moveDir = null; return; }
+    pred.seq++;
+    pred.pending.push({ seq: pred.seq, dir });
+    pred.lastStep = now;
+    pred.moveDir = dir;
+    netSend({ type: 'step', dir, seq: pred.seq });
+  }
+  // The players list to draw, with your own player at the predicted spot (and its step animation).
+  function playersWithPrediction(players, now) {
+    const me = players[meSeat];
+    if (!me || !me.alive) return players;
+    const pos = predictedPos();
+    if (pred.shown && (pred.shown.x !== pos.x || pred.shown.y !== pos.y)) {
+      const dist = Math.abs(pred.shown.x - pos.x) + Math.abs(pred.shown.y - pos.y);
+      net.anim[meSeat] = dist === 1 ? { from: { x: pred.shown.x, y: pred.shown.y }, t0: now } : null;
+    }
+    pred.shown = { x: pos.x, y: pos.y };
+    return players.map((p) => (p === me ? Object.assign({}, p, pos) : p));
+  }
+
+  // Offline modes read held directions straight from held; online movement goes through
+  // predictionTick (one message per tile), so nothing needs sending here.
+  function syncInput() {}
   function doBomb(seat) {
-    if (kind === 'online') netSend({ type: 'bomb' });
+    if (kind === 'online') {
+      pred.seq++;
+      pred.pending.push({ seq: pred.seq, bomb: true });
+      netSend({ type: 'bomb', seq: pred.seq });
+    }
     else if (G) BG.placeBomb(G, G.players[seat]);
     if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
   }
@@ -582,7 +642,7 @@
   // The base follows your thumb if you drag past the edge, so reversing direction is instant.
   const zone = $('stickZone'), stick = $('stick'), knob = $('knob');
   const STICK_R = 42;     // how far the knob travels from the centre (px)
-  const DEAD = 12;        // ignore tiny movements around the centre
+  const DEAD = 16;        // ignore small movements around the centre (slide back to stop)
   const SWITCH = 1.3;     // must lean this much more toward the new axis to change axis (stops jitter on diagonals)
   let stickId = null, stickDir = null, base = { x: 0, y: 0 };
 
@@ -710,10 +770,11 @@
         shrinkIn = G.shrinkAt - now; hurryIn = G.hurryUntil - now;
         if (G.status === 'over') showLocalResult();
       } else if (kind === 'online' && net.snap) {
+        predictionTick(now);
         const s = net.snap, age = now - net.recvAt;
         view = {
           grid: net.grid,
-          players: s.players,
+          players: playersWithPrediction(s.players, now),
           bombs: s.bombs.map((b) => ({ x: b.x, y: b.y, owner: b.owner, left: b.left - age })),
           explosions: s.explosions.map((e) => ({ x: e.x, y: e.y, owner: e.owner, left: e.left - age })),
           powerups: s.powerups,

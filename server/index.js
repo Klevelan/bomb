@@ -340,9 +340,16 @@ function handle(ws, msg) {
       }
       break;
 
+    case 'step':
+      if (room && room.phase === 'playing' && member && member.seat !== null && Game.DIRS[msg.dir]) {
+        Game.queueStep(room.game, member.seat, { dir: msg.dir, seq: Number(msg.seq) || 0 });
+      }
+      break;
+
     case 'bomb':
       if (room && room.phase === 'playing' && member && member.seat !== null) {
-        Game.placeBomb(room.game, room.game.players[member.seat]);
+        if (msg.seq) Game.queueStep(room.game, member.seat, { bomb: true, seq: Number(msg.seq) || 0 });
+        else Game.placeBomb(room.game, room.game.players[member.seat]);
       }
       break;
   }
