@@ -129,7 +129,7 @@
   }
 
   // ms per tile. Base ~5 tiles/s; each speed power-up shaves some off, down to ~8 tiles/s.
-  const moveCooldown = (p) => Math.max(120, 190 - p.speed * 18);
+  const moveCooldown = (p) => Math.max(120, 220 - p.speed * 18);
   // Online, steps from a phone can arrive bunched up by the network; allow a little slack.
   const STEP_SLACK = 60;
   const bombAt = (G, x, y) => G.bombs.find((b) => b.x === x && b.y === y);
