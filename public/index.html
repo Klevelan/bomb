@@ -187,6 +187,40 @@
   .reward-lines b { color: var(--fg); font-weight: 600; }
   .reward-lines .bonus b, .reward-lines .bonus span { color: #FFD25A; }
 
+  /* Layout chips */
+  .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chips button { flex: none; border: 1px solid var(--line); background: var(--panel2); color: var(--muted); border-radius: 999px;
+    padding: 7px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .chips button.on { background: var(--raise); color: var(--fg); border-color: #3A4558; }
+  .chips.locked button { cursor: default; }
+  .sublabel { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-top: 2px; }
+
+  /* Rank */
+  .rank-row { display: flex; align-items: center; gap: 10px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; font-weight: 800; font-size: 14px; padding: 6px 11px;
+    border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); white-space: nowrap; }
+  .badge::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--tier, var(--muted)); transform: rotate(45deg); }
+  .rank-info { font-size: 12px; color: var(--muted); flex: 1; min-width: 0; line-height: 1.35; }
+  .rank-info b { color: var(--fg); }
+  .ranked-line { font-size: 14px; font-weight: 600; }
+  .ranked-line .up { color: var(--ok); }
+  .ranked-line .down { color: var(--bad); }
+
+  /* Leaderboard */
+  .board main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 14px 16px 28px; }
+  .lb { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 4px; }
+  .lb-row { display: grid; grid-template-columns: 34px 1fr auto auto; align-items: center; gap: 10px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; font-size: 14px; }
+  .lb-row.me { border-color: rgba(255,122,77,.6); background: #1A1512; }
+  .lb-row .pos { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .lb-row:nth-child(1) .pos { color: #FFD25A; } .lb-row:nth-child(2) .pos { color: #C9D2DE; } .lb-row:nth-child(3) .pos { color: #D9965A; }
+  .lb-row .nm { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-row .tier { font-size: 11px; font-weight: 700; }
+  .lb-row .pts { font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; min-width: 44px; }
+  .clock { min-width: 70px; text-align: right; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .clock.hurry { color: var(--bad); }
+
   /* Toast */
   .toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px);
     background: #1A212C; border: 1px solid var(--line); color: var(--fg); padding: 10px 16px; border-radius: 12px;
@@ -214,6 +248,15 @@
   </div>
 
   <div class="card">
+    <h2>Rank</h2>
+    <div class="rank-row">
+      <span class="badge" id="rankBadge">Unranked</span>
+      <span class="rank-info" id="rankInfo">Play online with friends to get ranked.</span>
+    </div>
+    <button class="btn ghost" id="lbBtn">Leaderboard</button>
+  </div>
+
+  <div class="card">
     <h2>Online <span class="status" id="netStatus">Connecting…</span></h2>
     <button class="btn" id="quickBtn">Quick match</button>
     <button class="btn ghost" id="createBtn">Create private room</button>
@@ -231,6 +274,8 @@
       <button data-d="medium">medium</button>
       <button data-d="hard">hard</button>
     </div>
+    <div class="sublabel">Arena</div>
+    <div class="chips" id="soloLayout"></div>
     <button class="btn ghost" id="soloBtn">Play solo</button>
   </div>
 
@@ -267,6 +312,25 @@
   </main>
 </section>
 
+<!-- ============ Leaderboard ============ -->
+<section id="board" class="screen board hidden">
+  <header>
+    <button class="exit" id="boardBack">‹ Back</button>
+    <span class="label">Leaderboard</span>
+    <span class="spacer"></span>
+  </header>
+  <main>
+    <div class="card" style="max-width:560px">
+      <div class="rank-row">
+        <span class="badge" id="boardBadge">Unranked</span>
+        <span class="rank-info" id="boardInfo"></span>
+      </div>
+    </div>
+    <div class="lb" id="lbList"><p class="muted">Loading…</p></div>
+    <p class="muted shop-note" id="lbNote">Ranked points come from online matches with at least 2 real players. Last one standing gains the most; the longer you survive, the better.</p>
+  </main>
+</section>
+
 <!-- ============ Lobby ============ -->
 <section id="lobby" class="screen lobby hidden">
   <header>
@@ -292,6 +356,8 @@
         <button data-d="medium">medium</button>
         <button data-d="hard">hard</button>
       </div>
+      <div class="sublabel">Arena</div>
+      <div class="chips" id="lobbyLayout"></div>
     </div>
     <div class="card" style="text-align:center">
       <p class="muted" id="lobbyWait"></p>
@@ -305,7 +371,7 @@
   <header>
     <button class="exit" id="gameExit">‹ Exit</button>
     <span class="label" id="modeLabel"></span>
-    <span class="spacer"></span>
+    <span class="clock" id="clock"></span>
   </header>
   <main>
     <div class="wrap hud-wrap"><div class="hud" id="hud"></div></div>
@@ -331,6 +397,7 @@
   <div class="card">
     <div class="result" id="resultText"></div>
     <p class="sub" id="resultSub"></p>
+    <p class="ranked-line hidden" id="rankedLine"></p>
     <div class="reward hidden" id="reward">
       <div class="reward-total"><span class="coin"></span><span id="rewardTotal">+0</span></div>
       <div class="reward-lines" id="rewardLines"></div>
@@ -349,6 +416,7 @@
 <script src="config.js"></script>
 <script src="game.js"></script>
 <script src="cosmetics.js"></script>
+<script src="ranks.js"></script>
 <script src="profile.js"></script>
 <script src="render.js"></script>
 <script src="app.js"></script>

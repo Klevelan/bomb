@@ -29,7 +29,7 @@
   /* ---------------- Screens & toast ---------------- */
   let screen = 'menu';
   function show(id) {
-    for (const s of ['menu', 'shop', 'lobby', 'game']) $(s).classList.toggle('hidden', s !== id);
+    for (const s of ['menu', 'shop', 'board', 'lobby', 'game']) $(s).classList.toggle('hidden', s !== id);
     screen = id;
   }
   let toastTimer;
@@ -51,6 +51,7 @@
     ws: null, open: false, retry: 0, timer: null, queue: [],
     room: null, phase: null, snap: null, grid: null, recvAt: 0,
     anim: {}, lastPos: {}, sentDir: null,
+    pid: null, me: null, ranked: {},
   };
 
   function serverUrl() {
@@ -121,6 +122,15 @@
 
   function onNet(m) {
     switch (m.type) {
+      case 'welcome': net.pid = m.pid; break;
+      case 'me': net.me = m; renderRank(); break;
+      case 'ranked':
+        net.ranked[`${m.code}:${m.round}`] = m;
+        net.me = Object.assign({}, net.me, { rating: m.rating, position: m.position });
+        renderRank();
+        if (overlayShown && kind === 'online') renderRankedLine();
+        break;
+      case 'leaderboard': renderLeaderboard(m); break;
       case 'room': onRoom(m); break;
       case 'state': onState(m); break;
       case 'error': toast(m.text); break;
@@ -132,7 +142,7 @@
     const prevPhase = net.phase;
     net.room = r;
     net.phase = r.phase;
-    const me = r.members.find((x) => x.id === clientId);
+    const me = r.members.find((x) => x.id === net.pid);
     if (!me) return;
     meSeat = me.seat === null ? -1 : me.seat;
     if (kind !== 'online') { G = null; kind = 'online'; clearHeld(); }
@@ -186,7 +196,7 @@
   $('soloBtn').addEventListener('click', () => startLocal('solo'));
   $('duelBtn').addEventListener('click', () => startLocal('local'));
   $('quickBtn').addEventListener('click', () => goOnline({ type: 'quick', name: myName() }));
-  $('createBtn').addEventListener('click', () => goOnline({ type: 'create', name: myName(), difficulty: soloDiff }));
+  $('createBtn').addEventListener('click', () => goOnline({ type: 'create', name: myName(), difficulty: soloDiff, layout: soloLayout }));
 
   const codeInput = $('codeInput');
   codeInput.addEventListener('input', () => {
@@ -284,7 +294,7 @@
   /* ---------------- Lobby ---------------- */
   const lobbySeg = $('lobbyDiff');
   lobbySeg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
-    if (net.room && net.room.hostId === clientId) netSend({ type: 'settings', difficulty: b.dataset.d });
+    if (net.room && net.room.hostId === net.pid) netSend({ type: 'settings', difficulty: b.dataset.d });
   }));
   $('botsToggle').addEventListener('change', (e) => netSend({ type: 'settings', fillBots: e.target.checked }));
   $('startBtn').addEventListener('click', () => netSend({ type: 'start' }));
@@ -318,7 +328,7 @@
   function renderLobby() {
     const r = net.room;
     if (!r) return;
-    const isHost = r.hostId === clientId;
+    const isHost = r.hostId === net.pid;
     const online = r.members.filter((m) => m.connected).length;
     $('lobbyLabel').textContent = r.quick ? 'Quick match' : 'Private room';
     $('lobbyCode').textContent = r.code;
@@ -330,7 +340,7 @@
       if (m) {
         const tags = [];
         if (m.id === r.hostId) tags.push('<b>Host</b>');
-        if (m.id === clientId) tags.push('You');
+        if (m.id === net.pid) tags.push('You');
         if (!m.connected) tags.push('Away');
         html += `<div class="slot${m.connected ? '' : ' away'}"><span class="dot" style="background:${BG.COLORS[i]}"></span>${esc(m.name)}<span class="tag">${tags.join(' · ')}</span></div>`;
       } else {
@@ -344,6 +354,7 @@
     $('botsToggle').checked = r.fillBots;
     $('botsToggle').disabled = !isHost;
     syncSeg(lobbySeg, r.difficulty);
+    renderLayoutChips($('lobbyLayout'), r.layout, !isHost);
     lobbySeg.classList.toggle('locked', !isHost);
     $('hostNote').textContent = isHost ? 'You are host' : 'Host decides';
 
@@ -371,7 +382,7 @@
     const seats = k === 'solo'
       ? [{ name: 'You', skin: look.skin, bomb: look.bomb }, bot(1), bot(2), bot(3)]
       : [{ name: 'P1', skin: look.skin, bomb: look.bomb }, { name: 'P2' }];
-    G = BG.createGame({ mode: k, difficulty: soloDiff, seats, now });
+    G = BG.createGame({ mode: k, difficulty: soloDiff, seats, now, layout: soloLayout });
     meSeat = k === 'solo' ? 0 : -1;
     clearHeld();
     hideOverlay();
@@ -395,26 +406,29 @@
 
   function enterGameScreen() {
     hudSig = '';
+    cam.snap = true;
     show('game');
-    let label, hint;
-    if (kind === 'online') {
-      label = net.room ? `Room ${net.room.code}` : 'Online';
-      hint = 'Move <kbd>WASD</kbd>/<kbd>Arrows</kbd> · Bomb <kbd>Space</kbd> · Leave <kbd>Esc</kbd>';
-    } else if (kind === 'solo') {
-      label = `Solo · ${G.difficulty}`;
-      hint = 'Move <kbd>WASD</kbd>/<kbd>Arrows</kbd> · Bomb <kbd>Space</kbd> · Menu <kbd>Esc</kbd>';
-    } else {
-      label = 'Local duel';
-      hint = 'P1 <kbd>WASD</kbd> + <kbd>Space</kbd> · P2 <kbd>Arrows</kbd> + <kbd>Enter</kbd> · Menu <kbd>Esc</kbd>';
-    }
-    $('modeLabel').textContent = label;
+    let hint;
+    if (kind === 'online') hint = 'Move <kbd>WASD</kbd>/<kbd>Arrows</kbd> · Bomb <kbd>Space</kbd> · Leave <kbd>Esc</kbd>';
+    else if (kind === 'solo') hint = 'Move <kbd>WASD</kbd>/<kbd>Arrows</kbd> · Bomb <kbd>Space</kbd> · Menu <kbd>Esc</kbd>';
+    else hint = 'P1 <kbd>WASD</kbd> + <kbd>Space</kbd> · P2 <kbd>Arrows</kbd> + <kbd>Enter</kbd> · Menu <kbd>Esc</kbd>';
     $('hint').innerHTML = hint;
   }
+
+  function gameLabel(layoutId) {
+    const arena = BG.LAYOUTS[layoutId] ? BG.LAYOUTS[layoutId].name : '';
+    let label;
+    if (kind === 'online') label = net.room ? `Room ${net.room.code}` : 'Online';
+    else if (kind === 'solo') label = `Solo · ${G.difficulty}`;
+    else label = 'Local duel';
+    return arena ? `${label} · ${arena}` : label;
+  }
+  function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
   $('gameExit').addEventListener('click', toMenu);
 
   function again() {
     if (kind === 'solo' || kind === 'local') startLocal(kind);
-    else if (kind === 'online' && net.room && net.room.hostId === clientId) netSend({ type: 'start' });
+    else if (kind === 'online' && net.room && net.room.hostId === net.pid) netSend({ type: 'start' });
   }
 
   /* ---------------- Results overlay ---------------- */
@@ -426,6 +440,7 @@
     $('resultText').textContent = title;
     $('resultSub').textContent = sub;
     showReward(reward);
+    renderRankedLine();
     $('againBtn').classList.toggle('hidden', !canAgain);
     $('toLobbyBtn').classList.toggle('hidden', !toLobby);
     $('overlayLeave').textContent = leaveText;
@@ -455,7 +470,7 @@
     const s = net.snap;
     const r = net.room;
     if (!r) return;
-    const isHost = r.hostId === clientId;
+    const isHost = r.hostId === net.pid;
     let title = 'Round over', sub = '', reward = null;
     if (s) {
       const w = s.winner;
@@ -654,6 +669,26 @@
     el.classList.toggle('small', !!small);
   }
 
+  /* ---------------- Camera ---------------- */
+  // Zoomed in on your own player; eases out to the whole arena when there's no one to follow
+  // (local duel, watching, or after you're knocked out).
+  const ZOOM = 1.5;
+  const CENTER = BG.COLS / 2;
+  const cam = { x: CENTER, y: CENTER, zoom: 1, snap: true };
+  function updateCamera(view, status, dt, now) {
+    let tx = CENTER, ty = CENTER, tz = 1;
+    const me = view && meSeat >= 0 ? view.players[meSeat] : null;
+    if (me && kind !== 'local' && (me.alive || status === 'ending')) {
+      const p = window.playerPos(me, view.anim, now);
+      tx = p.x + 0.5; ty = p.y + 0.5; tz = ZOOM;
+    }
+    if (cam.snap) { cam.x = tx; cam.y = ty; cam.zoom = tz; cam.snap = !view; return; }
+    const k = 1 - Math.exp(-dt / 110);
+    cam.x += (tx - cam.x) * k;
+    cam.y += (ty - cam.y) * k;
+    cam.zoom += (tz - cam.zoom) * (1 - Math.exp(-dt / 350));
+  }
+
   /* ---------------- Main loop ---------------- */
   let last = performance.now();
   function frame(now) {
@@ -661,13 +696,18 @@
     last = now;
 
     if (screen === 'game') {
-      let view = null, status = null, readyIn = 0, goIn = 0;
+      let view = null, status = null, readyIn = 0, goIn = 0, shrinkIn = Infinity, hurryIn = 0;
 
       if ((kind === 'solo' || kind === 'local') && G) {
         for (const p of G.players) if (!p.isBot) p.input = heldDir(p.seat);
         BG.step(G, dt, now);
-        view = G; status = G.status;
+        view = {
+          grid: G.grid, players: G.players, bombs: G.bombs, explosions: G.explosions, powerups: G.powerups,
+          anim: G.anim, layout: G.layout, wallVer: G.wallVer, shrinkNext: BG.shrinkWarning(G, now),
+        };
+        status = G.status;
         readyIn = G.readyUntil - now; goIn = G.goUntil - now;
+        shrinkIn = G.shrinkAt - now; hurryIn = G.hurryUntil - now;
         if (G.status === 'over') showLocalResult();
       } else if (kind === 'online' && net.snap) {
         const s = net.snap, age = now - net.recvAt;
@@ -675,12 +715,14 @@
           grid: net.grid,
           players: s.players,
           bombs: s.bombs.map((b) => ({ x: b.x, y: b.y, owner: b.owner, left: b.left - age })),
-          explosions: s.explosions.map((e) => ({ x: e.x, y: e.y, left: e.left - age })),
+          explosions: s.explosions.map((e) => ({ x: e.x, y: e.y, owner: e.owner, left: e.left - age })),
           powerups: s.powerups,
           anim: net.anim,
+          layout: s.layout, wallVer: s.wallVer, round: s.round, shrinkNext: s.shrinkNext,
         };
         status = s.status;
         readyIn = s.readyIn - age; goIn = s.goIn - age;
+        shrinkIn = s.shrinkIn - age; hurryIn = s.hurryIn - age;
       }
 
       const size = canvas.clientWidth;
@@ -688,12 +730,23 @@
       const px = Math.round(size * dpr);
       if (px > 0 && canvas.width !== px) { canvas.width = px; canvas.height = px; }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      window.drawBoard(ctx, size, view, now, meSeat, Profile.equipped('map'));
+      updateCamera(view, status, dt, now);
+      window.drawBoard(ctx, size, view, now, meSeat, Profile.equipped('map'), cam);
 
       if (view) {
         renderHud(view.players);
+        setText($('modeLabel'), gameLabel(view.layout));
+        const clock = $('clock');
+        if (status === 'playing' || status === 'ready') {
+          if (shrinkIn > 0) {
+            const sec = Math.ceil(Math.min(shrinkIn, BG.ROUND_MS) / 1000);
+            setText(clock, `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`);
+            clock.classList.toggle('hurry', sec <= 10);
+          } else { setText(clock, 'Sudden death'); clock.classList.add('hurry'); }
+        } else setText(clock, '');
         if (status === 'ready' && readyIn > 0) setBanner('Ready…');
         else if (goIn > 0) setBanner('Go!');
+        else if (hurryIn > 0) setBanner('Hurry up!');
         else if (kind === 'online' && meSeat < 0 && status !== 'over') setBanner('Watching · you play next round', true);
         else setBanner('');
         const me = view.players[meSeat];
@@ -734,6 +787,93 @@
   const swAllowed = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   if ('serviceWorker' in navigator && swAllowed) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+
+  /* ---------------- Arenas ---------------- */
+  let soloLayout = store.get('bombroom:layout', 'random');
+  if (soloLayout !== 'random' && !BG.LAYOUTS[soloLayout]) soloLayout = 'random';
+  const LAYOUT_CHOICES = [['random', 'Random'], ...BG.LAYOUT_IDS.map((id) => [id, BG.LAYOUTS[id].name])];
+  function renderLayoutChips(el, value, locked) {
+    if (!el.childElementCount) {
+      el.innerHTML = LAYOUT_CHOICES.map(([id, name]) => `<button data-l="${id}">${name}</button>`).join('');
+    }
+    el.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.l === value));
+    el.classList.toggle('locked', !!locked);
+  }
+  renderLayoutChips($('soloLayout'), soloLayout);
+  $('soloLayout').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-l]');
+    if (!b) return;
+    soloLayout = b.dataset.l;
+    store.set('bombroom:layout', soloLayout);
+    renderLayoutChips($('soloLayout'), soloLayout);
+  });
+  $('lobbyLayout').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-l]');
+    if (b && net.room && net.room.hostId === net.pid) netSend({ type: 'settings', layout: b.dataset.l });
+  });
+
+  /* ---------------- Rank & leaderboard ---------------- */
+  function rankText(me) {
+    if (!me || me.rating === null || me.rating === undefined) return null;
+    const tier = Ranks.tierFor(me.rating);
+    const next = Ranks.nextTier(me.rating);
+    return { tier, next };
+  }
+  function paintBadge(el, info, rating) {
+    if (!info) { el.textContent = 'Unranked'; el.style.removeProperty('--tier'); return; }
+    el.textContent = `${info.tier.name} · ${rating}`;
+    el.style.setProperty('--tier', info.tier.color);
+  }
+  function renderRank() {
+    const me = net.me;
+    const info = rankText(me);
+    for (const [badgeId, infoId] of [['rankBadge', 'rankInfo'], ['boardBadge', 'boardInfo']]) {
+      paintBadge($(badgeId), info, me && me.rating);
+      let text;
+      if (!info) text = 'Play an online match with at least one friend to get ranked.';
+      else {
+        text = `#${me.position || '?'} · ${me.wins || 0} wins in ${me.matches || 0} ranked matches`;
+        if (info.next) text += ` · ${info.next.min - me.rating} to ${info.next.name}`;
+      }
+      setText($(infoId), text);
+    }
+  }
+  renderRank();
+
+  function renderLeaderboard(m) {
+    const list = $('lbList');
+    if (m.error) { list.innerHTML = `<p class="muted">${esc(m.error)}</p>`; return; }
+    if (!m.top.length) { list.innerHTML = '<p class="muted">No ranked matches yet. Be the first!</p>'; return; }
+    list.innerHTML = m.top.map((r, i) => {
+      const t = Ranks.tierFor(r.rating);
+      return `<div class="lb-row${r.me ? ' me' : ''}"><span class="pos">${i + 1}</span>`
+        + `<span class="nm">${esc(r.name)}${r.me ? ' (you)' : ''}</span>`
+        + `<span class="tier" style="color:${t.color}">${t.name}</span><span class="pts">${r.rating}</span></div>`;
+    }).join('');
+    let note = `${m.total} ranked player${m.total === 1 ? '' : 's'}. Ranked points come from online matches with at least 2 real players: the longer you survive, the more you gain.`;
+    if (!m.saved) note += ' (Test server: rankings reset when it restarts.)';
+    setText($('lbNote'), note);
+  }
+  $('lbBtn').addEventListener('click', () => {
+    if (!serverUrl()) { toast('The leaderboard needs the server. Run "npm start" and open http://localhost:3000'); return; }
+    $('lbList').innerHTML = '<p class="muted">Loading…</p>';
+    show('board');
+    goOnline({ type: 'leaderboard' });
+  });
+  $('boardBack').addEventListener('click', () => show('menu'));
+
+  function renderRankedLine() {
+    const el = $('rankedLine');
+    const r = net.room, s = net.snap;
+    if (kind !== 'online' || !r || !s || meSeat < 0) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    if (!r.ranked) { el.innerHTML = '<span class="muted">Unranked: ranked needs 2+ real players.</span>'; return; }
+    const res = net.ranked[`${r.code}:${s.round}`];
+    if (!res) { el.innerHTML = '<span class="muted">Updating rank…</span>'; return; }
+    const t = Ranks.tierFor(res.rating);
+    const cls = res.delta >= 0 ? 'up' : 'down';
+    el.innerHTML = `<span class="${cls}">${res.delta >= 0 ? '+' : ''}${res.delta}</span> ranked points · ${res.rating} <span style="color:${t.color}">${t.name}</span> · #${res.position}`;
   }
 
   /* ---------------- Start up ---------------- */

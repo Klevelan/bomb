@@ -62,10 +62,11 @@
     ctx.stroke();
   }
 
-  // Floor and walls never change during a match, so draw them once per size/theme and reuse.
+  // Floor and walls rarely change (only when the arena closes in), so draw them once
+  // per size/theme/layout/wall-change and reuse.
   let bgCache = { key: '', canvas: null };
-  function background(size, dpr, T) {
-    const key = `${size}|${dpr}|${T.id}`;
+  function background(size, dpr, T, grid, wallKey) {
+    const key = `${size}|${dpr}|${T.id}|${wallKey}`;
     if (bgCache.key === key) return bgCache.canvas;
     const c = document.createElement('canvas');
     c.width = Math.round(size * dpr); c.height = Math.round(size * dpr);
@@ -75,7 +76,7 @@
     for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) drawFloor(g, x, y, cell, T);
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
-        if (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1 || (x % 2 === 0 && y % 2 === 0)) drawWall(g, x, y, cell, T);
+        if (grid[y * COLS + x] === WALL) drawWall(g, x, y, cell, T);
       }
     }
     bgCache = { key, canvas: c };
@@ -280,15 +281,17 @@
     }
   }
 
+  // Where a player is drawn right now (smoothly between tiles while stepping).
+  function playerPos(p, anim, now) {
+    const a = anim && anim[p.seat];
+    if (!a || !a.from) return { x: p.x, y: p.y };
+    const k = Math.min(1, (now - a.t0) / STEP_ANIM);
+    const e = 1 - Math.pow(1 - k, 3);
+    return { x: a.from.x + (p.x - a.from.x) * e, y: a.from.y + (p.y - a.from.y) * e };
+  }
+
   function drawPlayer(ctx, p, cell, now, meSeat, anim) {
-    let gx = p.x, gy = p.y;
-    const a = anim[p.seat];
-    if (a && a.from) {
-      const k = Math.min(1, (now - a.t0) / STEP_ANIM);
-      const e = 1 - Math.pow(1 - k, 3);
-      gx = a.from.x + (p.x - a.from.x) * e;
-      gy = a.from.y + (p.y - a.from.y) * e;
-    }
+    const { x: gx, y: gy } = playerPos(p, anim, now);
     const cx = (gx + 0.5) * cell, cy = (gy + 0.5) * cell, r = cell * 0.32;
     const skin = Cos.byId('skin', p.skin);
     const top = skin.body ? skin.body[0] : shade(p.color, 0.08);
@@ -339,13 +342,22 @@
     return Cos.byId('bomb', p ? p.bombFx : 'classic');
   }
 
-  function drawBoard(ctx, size, view, now, meSeat, themeId) {
+  // cam = { x, y, zoom }: the tile position to centre on (x, y) and how far to zoom in.
+  // The view never scrolls past the arena edges.
+  const MAX_ZOOM = 1.6;
+  function drawBoard(ctx, size, view, now, meSeat, themeId, cam) {
     const T = Cos.byId('map', themeId);
-    const cell = size / COLS;
+    const zoom = cam ? Math.max(1, Math.min(MAX_ZOOM, cam.zoom)) : 1;
+    const cell = (size * zoom) / COLS;
+    const vis = COLS / zoom; // tiles visible across
+    const clampView = (c) => Math.max(0, Math.min(COLS - vis, c - vis / 2));
+    const ox = cam ? clampView(cam.x) * cell : 0;
+    const oy = cam ? clampView(cam.y) * cell : 0;
     const dpr = ctx.getTransform ? ctx.getTransform().a : 1;
     ctx.clearRect(0, 0, size, size);
     if (!view || !view.grid) {
-      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) drawFloor(ctx, x, y, cell, T);
+      const c = size / COLS;
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) drawFloor(ctx, x, y, c, T);
       return;
     }
 
@@ -353,8 +365,21 @@
     const shake = Math.min(1, blasts.length / 9) * cell * 0.16;
     ctx.save();
     if (shake > 0.3) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    ctx.translate(-ox, -oy);
 
-    ctx.drawImage(background(size, dpr, T), 0, 0, size, size);
+    // The cached floor/walls are drawn once at full zoom resolution and scaled down as needed.
+    const bg = background(Math.round(size * MAX_ZOOM), dpr, T, view.grid, `${view.layout}|${view.wallVer || 0}|${view.round || ''}`);
+    ctx.drawImage(bg, 0, 0, COLS * cell, ROWS * cell);
+    // Warning on the tiles the closing walls fill next.
+    if (view.shrinkNext && view.shrinkNext.length) {
+      const pulse = 0.35 + 0.25 * Math.sin(now / 90);
+      view.shrinkNext.forEach((k, i) => {
+        const x = k % COLS, y = (k / COLS) | 0;
+        ctx.fillStyle = `rgba(255,60,60,${pulse * (1 - i / view.shrinkNext.length * 0.6)})`;
+        roundRect(ctx, x * cell + cell * 0.06, y * cell + cell * 0.06, cell * 0.88, cell * 0.88, cell * 0.16);
+        ctx.fill();
+      });
+    }
     for (let y = 1; y < ROWS - 1; y++) {
       for (let x = 1; x < COLS - 1; x++) {
         if (view.grid[y * COLS + x] === BOX) drawBox(ctx, x, y, cell, T);
@@ -420,6 +445,7 @@
   }
 
   window.drawBoard = drawBoard;
+  window.playerPos = playerPos;
   window.drawPreview = drawPreview;
   window.KIND_COLOR = KIND_COLOR;
   window.skinColor = (p) => { const s = Cos.byId('skin', p.skin); return s.body ? s.body[0] : p.color; };

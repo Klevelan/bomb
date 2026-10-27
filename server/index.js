@@ -10,6 +10,10 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const Game = require('../public/game.js');
 const Cosmetics = require('../public/cosmetics.js');
+const Ranks = require('../public/ranks.js');
+const { createStore } = require('./store.js');
+
+const store = createStore();
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -82,6 +86,10 @@ function cleanName(name) {
   return s || 'Player';
 }
 
+// Each device has a secret id (kept on the phone, used to reconnect and to own a ranking).
+// Other players only ever see this one-way scrambled version of it.
+const publicId = (id) => crypto.createHash('sha256').update(id).digest('hex').slice(0, 12);
+
 function cleanLook(look) {
   const l = look && typeof look === 'object' ? look : {};
   return {
@@ -103,7 +111,7 @@ function newCode() {
 function createRoom(quick) {
   const room = {
     code: newCode(), quick, hostId: null, members: new Map(),
-    difficulty: 'medium', fillBots: true,
+    difficulty: 'medium', fillBots: true, layout: 'random',
     phase: 'lobby', game: null, lastTick: 0,
     autoStartAt: null, emptySince: null,
   };
@@ -119,13 +127,15 @@ function roomInfo(room) {
     code: room.code,
     quick: room.quick,
     phase: room.phase,
-    hostId: room.hostId,
+    hostId: room.hostId ? publicId(room.hostId) : null,
     difficulty: room.difficulty,
     fillBots: room.fillBots,
+    layout: room.layout,
+    ranked: !!room.ranked,
     maxPlayers: Game.MAX_PLAYERS,
     autoStartIn: room.autoStartAt ? Math.max(0, Math.ceil((room.autoStartAt - now()) / 1000)) : null,
     members: [...room.members.values()].map((m) => ({
-      id: m.id, name: m.name, connected: m.connected, seat: m.seat,
+      id: m.pid, name: m.name, connected: m.connected, seat: m.seat,
     })),
   };
 }
@@ -151,7 +161,7 @@ function updateQuick(room) {
 function addMember(room, id, name, ws) {
   let m = room.members.get(id);
   if (!m) {
-    m = { id, name, ws, connected: true, disconnectedAt: null, seat: null, sentGrid: null, look: ws.look || cleanLook() };
+    m = { id, pid: publicId(id), name, ws, connected: true, disconnectedAt: null, seat: null, sentGrid: null, look: ws.look || cleanLook() };
     room.members.set(id, m);
   } else {
     Object.assign(m, { name, ws, connected: true, disconnectedAt: null, sentGrid: null, look: ws.look || m.look });
@@ -167,7 +177,7 @@ function addMember(room, id, name, ws) {
 function removeMember(room, id) {
   const m = room.members.get(id);
   if (!m) return;
-  if (room.game && room.phase === 'playing' && m.seat !== null) Game.forfeit(room.game, m.seat);
+  if (room.game && room.phase === 'playing' && m.seat !== null) Game.forfeit(room.game, m.seat, now());
   room.members.delete(id);
   const c = clients.get(id);
   if (c && c.roomCode === room.code) c.roomCode = null;
@@ -196,7 +206,10 @@ function startRound(room) {
   for (const m of room.members.values()) { m.seat = null; m.sentGrid = null; }
   humans.forEach((m, i) => { m.seat = i; });
   const t = now();
-  room.game = Game.createGame({ mode: 'online', difficulty: room.difficulty, seats, now: t });
+  room.game = Game.createGame({ mode: 'online', difficulty: room.difficulty, layout: room.layout, seats, now: t });
+  // Ranked when at least two real people play. Remember who sat where, even if they leave.
+  room.seatIds = humans.map((m) => m.id);
+  room.ranked = humans.length >= 2;
   room.phase = 'playing';
   room.round = (room.round || 0) + 1;
   room.lastTick = t;
@@ -234,7 +247,8 @@ function handle(ws, msg) {
     const prev = clients.get(id);
     if (prev && prev.ws && prev.ws !== ws) { prev.ws.replaced = true; prev.ws.close(4000, 'replaced'); }
     clients.set(id, { ws, roomCode: prev ? prev.roomCode : null });
-    send(ws, { type: 'welcome', id });
+    send(ws, { type: 'welcome', pid: publicId(id) });
+    sendMyRank(ws);
     // Reconnect: put the player back into their room and seat.
     const room = prev && prev.roomCode ? rooms.get(prev.roomCode) : null;
     if (room && room.members.has(id)) addMember(room, id, room.members.get(id).name, ws);
@@ -262,6 +276,7 @@ function handle(ws, msg) {
       if (rooms.size >= MAX_ROOMS) return send(ws, { type: 'error', text: 'Server is full, try again soon.' });
       const r = createRoom(false);
       if (Game.DIFF[msg.difficulty]) r.difficulty = msg.difficulty;
+      if (Game.LAYOUTS[msg.layout]) r.layout = msg.layout;
       addMember(r, id, cleanName(msg.name || ws.name), ws);
       break;
     }
@@ -294,6 +309,7 @@ function handle(ws, msg) {
       if (!isHost || room.phase === 'playing') return;
       if (Game.DIFF[msg.difficulty]) room.difficulty = msg.difficulty;
       if (typeof msg.fillBots === 'boolean') room.fillBots = msg.fillBots;
+      if (msg.layout === 'random' || Game.LAYOUTS[msg.layout]) room.layout = msg.layout;
       broadcastRoom(room);
       break;
 
@@ -311,6 +327,10 @@ function handle(ws, msg) {
       for (const m of room.members.values()) m.seat = null;
       updateQuick(room);
       broadcastRoom(room);
+      break;
+
+    case 'leaderboard':
+      sendLeaderboard(ws);
       break;
 
     case 'input':
@@ -343,6 +363,54 @@ function onClose(ws) {
   if (room.hostId === m.id && connectedMembers(room).length) pickNewHost(room);
   if (room.quick && room.phase === 'lobby') { room.autoStartAt = null; updateQuick(room); }
   broadcastRoom(room);
+}
+
+/* ------------------------------------------------------------------ */
+/* Rankings                                                            */
+/* ------------------------------------------------------------------ */
+
+async function recordRanked(room, G, round) {
+  const place = Game.placements(G);
+  const seats = room.seatIds.map((id, seat) => ({
+    id, seat, name: G.players[seat].name, kills: G.players[seat].kills, place: place[seat],
+  }));
+  const existing = await store.get(seats.map((s) => s.id));
+  for (const s of seats) s.rating = existing[s.id] ? existing[s.id].rating : Ranks.START_RATING;
+  const deltas = Ranks.rateMatch(seats);
+  const results = seats.map((s, i) => ({
+    id: s.id, name: s.name, kills: s.kills, won: G.winner === s.seat, rating: s.rating + deltas[i], delta: deltas[i],
+  }));
+  await store.save(results);
+  for (const r of results) {
+    const c = clients.get(r.id);
+    if (!c || !c.ws) continue;
+    const position = await store.position(r.rating);
+    send(c.ws, { type: 'ranked', code: room.code, round, delta: r.delta, rating: r.rating, position });
+  }
+}
+
+async function sendMyRank(ws) {
+  try {
+    const id = ws.clientId;
+    const row = (await store.get([id]))[id];
+    if (!row) { send(ws, { type: 'me', rating: null, matches: 0, wins: 0 }); return; }
+    const position = await store.position(row.rating);
+    send(ws, { type: 'me', rating: row.rating, matches: row.matches, wins: row.wins, position });
+  } catch (e) {
+    console.error('Could not load player rank:', e.message);
+  }
+}
+
+async function sendLeaderboard(ws) {
+  try {
+    const [top, total] = await Promise.all([store.top(50), store.count()]);
+    const rows = top.map((r) => ({ name: r.name, rating: r.rating, wins: r.wins, matches: r.matches, me: r.id === ws.clientId }));
+    send(ws, { type: 'leaderboard', top: rows, total, saved: store.kind !== 'memory' });
+    sendMyRank(ws);
+  } catch (e) {
+    console.error('Could not load leaderboard:', e.message);
+    send(ws, { type: 'leaderboard', error: 'The leaderboard is unavailable right now.' });
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -402,7 +470,11 @@ setInterval(() => {
       if (m.sentGrid !== grid) { msg.grid = grid; m.sentGrid = grid; }
       send(m.ws, msg);
     }
-    if (G.status === 'over') { room.phase = 'results'; broadcastRoom(room); }
+    if (G.status === 'over') {
+      room.phase = 'results';
+      broadcastRoom(room);
+      if (room.ranked) recordRanked(room, G, room.round).catch((e) => console.error('Could not save ranked result:', e.message));
+    }
   }
 }, TICK_MS);
 
@@ -427,6 +499,10 @@ setInterval(() => {
     if (!c.ws && (!c.roomCode || !rooms.has(c.roomCode))) clients.delete(id);
   }
 }, 1000);
+
+store.init()
+  .then(() => console.log(`Leaderboard storage: ${store.kind}`))
+  .catch((e) => console.error('Could not set up the leaderboard database:', e.message));
 
 server.listen(PORT, () => {
   console.log(`Bomb Room running on http://localhost:${PORT}`);

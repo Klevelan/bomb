@@ -27,13 +27,72 @@
 
   const idx = (x, y) => y * COLS + x;
 
-  function makeGrid() {
+  // Arena layouts. All are mirror-symmetric (cx, cy = distance from the centre) so every
+  // corner spawn gets the same map. wall(x, y) adds walls inside the border; noCrate(x, y)
+  // keeps tiles free of crates; density = share of other tiles that get a crate.
+  const C9 = (COLS - 1) / 2;
+  const even = (n) => n % 2 === 0;
+  const pillar = (x, y) => even(x) && even(y);
+  const LAYOUTS = {
+    classic: {
+      name: 'Classic', density: BOX_DENSITY,
+      wall: pillar,
+    },
+    open: {
+      name: 'Open Field', density: 0.5,
+      wall: (x, y) => x % 3 === 0 && y % 3 === 0,
+    },
+    fortress: {
+      name: 'Fortress', density: 0.7,
+      wall: (x, y, cx, cy) => pillar(x, y) || (Math.max(cx, cy) === 3 && cx !== 0 && cy !== 0),
+    },
+    crossroads: {
+      name: 'Crossroads', density: 0.8,
+      wall: (x, y, cx, cy) => pillar(x, y) && cx > 1 && cy > 1,
+      noCrate: (x, y, cx, cy) => cx <= 1 || cy <= 1,
+    },
+    labyrinth: {
+      name: 'Labyrinth', density: 0.6,
+      wall: (x, y, cx, cy) => pillar(x, y)
+        || (even(y) && !even(x) && cy % 4 === 3 && cx % 4 === 2)
+        || (even(x) && !even(y) && cx % 4 === 1 && cy % 4 === 0 && cy < 8),
+    },
+  };
+  const LAYOUT_IDS = Object.keys(LAYOUTS);
+
+  // Sudden death: after ROUND_MS the arena closes in from the outside, ring by ring.
+  // Each step fills the same tile on all four sides at once (rotations of each other),
+  // so no corner spawn is closed in before another. Guarantees every match ends.
+  const ROUND_MS = 120000;
+  const SHRINK_MS = 450;
+  const STEPS = (() => {
+    const rot = (x, y) => [COLS - 1 - y, x]; // quarter turn around the centre
+    const out = [];
+    for (let r = 1; r <= C9; r++) {
+      const lo = r, hi = COLS - 1 - r;
+      if (lo === hi) { out.push([idx(lo, lo)]); break; }
+      for (let x = lo; x < hi; x++) {
+        const step = [];
+        let p = [x, lo];
+        for (let k = 0; k < 4; k++) { step.push(idx(p[0], p[1])); p = rot(p[0], p[1]); }
+        out.push(step);
+      }
+    }
+    return out;
+  })();
+  const pickLayout = (id) => (LAYOUTS[id] ? id : LAYOUT_IDS[(Math.random() * LAYOUT_IDS.length) | 0]);
+
+  function makeGrid(layoutId) {
+    const L = LAYOUTS[layoutId] || LAYOUTS.classic;
     const g = new Uint8Array(N);
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
-        if (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1 || (x % 2 === 0 && y % 2 === 0)) {
+        const cx = Math.abs(x - C9), cy = Math.abs(y - C9);
+        // Keep each spawn's L-shaped escape route open (same row or column, 2 tiles).
+        const nearSpawn = SPAWNS.some(([sx, sy]) => (sx === x || sy === y) && Math.abs(sx - x) + Math.abs(sy - y) <= 2);
+        if (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1 || (!nearSpawn && L.wall(x, y, cx, cy))) {
           g[idx(x, y)] = WALL;
-        } else if (!SPAWNS.some(([sx, sy]) => Math.abs(sx - x) + Math.abs(sy - y) <= 2) && Math.random() < BOX_DENSITY) {
+        } else if (!nearSpawn && !(L.noCrate && L.noCrate(x, y, cx, cy)) && Math.random() < L.density) {
           g[idx(x, y)] = BOX;
         }
       }
@@ -42,8 +101,10 @@
   }
 
   // seats: [{ name, isBot }] in seat order (max 4). mode: 'solo' | 'local' | 'online'.
-  function createGame({ mode, difficulty, seats, now }) {
+  // layout: a key of LAYOUTS, or anything else for a random one.
+  function createGame({ mode, difficulty, seats, now, layout }) {
     if (!DIFF[difficulty]) difficulty = 'medium';
+    layout = pickLayout(layout);
     const players = seats.slice(0, MAX_PLAYERS).map((s, i) => ({
       seat: i,
       name: s.name,
@@ -57,11 +118,13 @@
       skin: s.skin || 'classic',
       bombFx: s.bomb || 'classic',
       crates: 0, kills: 0, // for coin rewards
+      diedAt: null,        // for placement in ranked matches
     }));
     return {
-      mode, difficulty, grid: makeGrid(), players,
+      mode, difficulty, layout, grid: makeGrid(layout), players,
       bombs: [], explosions: [], powerups: [], anim: {},
       status: 'ready', readyUntil: now + 1800, goUntil: 0, endAt: 0, winner: null,
+      shrinkAt: now + 1800 + ROUND_MS, shrinkPos: 0, hurryUntil: 0, wallVer: 0,
     };
   }
 
@@ -153,6 +216,7 @@
       if (now < G.readyUntil) return;
       G.status = 'playing';
       G.goUntil = now + 600;
+      G.shrinkAt = now + ROUND_MS;
     }
     if (G.status === 'over') return;
 
@@ -172,6 +236,9 @@
       }
     }
 
+    G.now = now;
+    if (G.status === 'playing' || G.status === 'ending') shrink(G, now);
+
     for (const b of G.bombs) b.left -= dt;
     let due;
     while ((due = G.bombs.find((b) => b.left <= 0))) detonate(G, due);
@@ -188,6 +255,7 @@
       const e = G.explosions.find((e) => e.x === p.x && e.y === p.y);
       if (e) {
         p.alive = false;
+        p.diedAt = now;
         const killer = G.players[e.owner];
         if (killer && killer !== p) killer.kills++;
       }
@@ -204,18 +272,61 @@
     }
   }
 
+  // Next steps of the closing walls (each a list of tiles), skipping tiles that are already walls.
+  function upcomingSteps(G, count) {
+    const out = [];
+    for (let i = G.shrinkPos; i < STEPS.length && out.length < count; i++) {
+      const tiles = STEPS[i].filter((k) => G.grid[k] !== WALL);
+      if (tiles.length) out.push(tiles);
+    }
+    return out;
+  }
+  const upcomingShrink = (G, steps) => upcomingSteps(G, steps).flat();
+
+  // Tiles to flash red: only once the walls are about to move.
+  function shrinkWarning(G, now) {
+    if ((G.status !== 'playing' && G.status !== 'ending') || G.shrinkAt - now > 3000) return [];
+    return upcomingShrink(G, 3);
+  }
+
+  function shrink(G, now) {
+    if (now < G.shrinkAt) return;
+    if (G.shrinkPos === 0 && !G.hurryUntil) G.hurryUntil = now + 1500;
+    while (now >= G.shrinkAt && G.shrinkPos < STEPS.length) {
+      const tiles = STEPS[G.shrinkPos++].filter((k) => G.grid[k] !== WALL);
+      if (!tiles.length) continue;
+      for (const k of tiles) {
+        G.grid[k] = WALL;
+        const x = k % COLS, y = (k / COLS) | 0;
+        G.bombs = G.bombs.filter((b) => b.x !== x || b.y !== y);
+        G.powerups = G.powerups.filter((u) => u.x !== x || u.y !== y);
+        G.explosions = G.explosions.filter((e) => e.x !== x || e.y !== y);
+        for (const p of G.players) {
+          if (p.alive && p.x === x && p.y === y) { p.alive = false; p.diedAt = now; }
+        }
+      }
+      G.wallVer++;
+      G.shrinkAt += SHRINK_MS;
+    }
+  }
+
   // Remove a player from a running match (e.g. they left the room).
-  function forfeit(G, seat) {
+  function forfeit(G, seat, now) {
     const p = G.players[seat];
-    if (p) { p.alive = false; p.input = null; }
+    if (p) { if (p.alive) p.diedAt = now; p.alive = false; p.input = null; }
   }
 
   // Compact, JSON-friendly view of the game for sending to clients. Times are relative ms.
   function snapshot(G, now) {
     return {
       status: G.status,
+      layout: G.layout,
       difficulty: G.difficulty,
       readyIn: Math.max(0, Math.round(G.readyUntil - now)),
+      shrinkIn: Math.round(G.shrinkAt - now),
+      hurryIn: Math.max(0, Math.round(G.hurryUntil - now)),
+      shrinkNext: shrinkWarning(G, now),
+      wallVer: G.wallVer,
       goIn: Math.max(0, Math.round(G.goUntil - now)),
       winner: G.winner,
       players: G.players.map((p) => ({
@@ -230,12 +341,35 @@
   }
   const gridString = (G) => G.grid.join('');
 
+  // Final placings for a finished match: 1 = winner. Survivors share first place;
+  // the rest are ordered by how long they lasted (same moment = shared place).
+  function placements(G) {
+    const order = [...G.players].sort((a, b) => {
+      if (a.alive !== b.alive) return a.alive ? -1 : 1;
+      return (b.diedAt || 0) - (a.diedAt || 0);
+    });
+    const place = {};
+    order.forEach((p, i) => {
+      const prev = order[i - 1];
+      const tie = prev && prev.alive === p.alive && (p.alive || prev.diedAt === p.diedAt);
+      place[p.seat] = tie ? place[prev.seat] : i + 1;
+    });
+    return place;
+  }
+
   /* ---------- Bots ---------- */
 
   // For each tile: ms until it is hit by a blast (Infinity = safe). Accounts for chain reactions.
   function dangerMap(G, bombs) {
     const d = new Float64Array(N).fill(Infinity);
     for (const e of G.explosions) d[idx(e.x, e.y)] = 0;
+    // Tiles the closing walls are about to fill count as danger too.
+    if (G.status === 'playing') {
+      upcomingSteps(G, 6).forEach((tiles, i) => {
+        const t = Math.max(0, G.shrinkAt - (G.now || 0)) + i * SHRINK_MS;
+        if (t < 6000) for (const k of tiles) d[k] = Math.min(d[k], t);
+      });
+    }
     for (let pass = 0; pass < 3; pass++) {
       for (const b of bombs) {
         const c = idx(b.x, b.y);
@@ -358,6 +492,7 @@
   const api = {
     COLS, ROWS, FLOOR, WALL, BOX, BLAST_MS, STEP_ANIM, FUSE_MS, MAX_PLAYERS, DIRS, COLORS, DIFF,
     createGame, step, tryMove, placeBomb, forfeit, snapshot, gridString, activeBombs,
+    LAYOUTS, LAYOUT_IDS, makeGrid, placements, upcomingShrink, shrinkWarning, ROUND_MS, SHRINK_MS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BombGame = api;
