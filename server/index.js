@@ -346,6 +346,12 @@ function handle(ws, msg) {
       }
       break;
 
+    case 'hold':
+      if (room && room.phase === 'playing' && member && member.seat !== null) {
+        Game.queueStep(room.game, member.seat, { hold: !!msg.on, seq: Number(msg.seq) || 0 });
+      }
+      break;
+
     case 'bomb':
       if (room && room.phase === 'playing' && member && member.seat !== null) {
         if (msg.seq) Game.queueStep(room.game, member.seat, { bomb: true, seq: Number(msg.seq) || 0 });

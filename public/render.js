@@ -791,6 +791,41 @@
 
   /* ---------------- Board ---------------- */
 
+  // Bombs being pushed slide smoothly between tiles (tracked by bomb id).
+  const bombAnim = new Map();
+  function bombPos(b, now) {
+    if (b.id === undefined) return null;
+    let a = bombAnim.get(b.id);
+    if (!a) { a = { x: b.x, y: b.y, fx: b.x, fy: b.y, t0: 0 }; bombAnim.set(b.id, a); }
+    if (a.x !== b.x || a.y !== b.y) {
+      const cur = bombPos.lerp(a, now);
+      Object.assign(a, { fx: cur.x, fy: cur.y, x: b.x, y: b.y, t0: now });
+    }
+    return bombPos.lerp(a, now);
+  }
+  bombPos.lerp = (a, now) => {
+    const k = Math.min(1, (now - a.t0) / STEP_ANIM);
+    const e = 1 - Math.pow(1 - k, 3);
+    return { x: a.fx + (a.x - a.fx) * e, y: a.fy + (a.y - a.fy) * e };
+  };
+  function pruneBombAnim(bombs) {
+    if (bombAnim.size <= bombs.length) return;
+    const live = new Set(bombs.map((b) => b.id));
+    for (const id of bombAnim.keys()) if (!live.has(id)) bombAnim.delete(id);
+  }
+  // A ring in the holder's colour around a bomb someone is pushing.
+  function drawHeldRing(ctx, b, cell, now, holder) {
+    const cx = (b.x + 0.5) * cell, cy = (b.y + 0.5) * cell;
+    ctx.save();
+    ctx.setLineDash([cell * 0.08, cell * 0.07]);
+    ctx.lineDashOffset = -now / 40;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.46, 0, Math.PI * 2);
+    ctx.strokeStyle = holder ? holder.color : 'rgba(255,255,255,0.7)';
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = Math.max(1.5, cell * 0.045); ctx.stroke();
+    ctx.restore();
+  }
+
   function fxFor(players, owner) {
     const p = players && players[owner];
     return Cos.byId('bomb', p ? p.bombFx : 'classic');
@@ -843,7 +878,13 @@
       }
     }
     for (const u of view.powerups || []) drawPowerup(ctx, u, cell, now);
-    for (const b of view.bombs || []) drawBomb(ctx, b, cell, now, fxFor(players, b.owner));
+    for (const b of view.bombs || []) {
+      const pos = bombPos(b, now);
+      const drawn = pos ? Object.assign({}, b, pos) : b;
+      if (b.held !== null && b.held !== undefined) drawHeldRing(ctx, drawn, cell, now, players[b.held]);
+      drawBomb(ctx, drawn, cell, now, fxFor(players, b.owner));
+    }
+    pruneBombAnim(view.bombs || []);
     for (const e of blasts) drawBlast(ctx, e, cell, now, fxFor(players, e.owner));
     for (const p of players) drawPlayer(ctx, p, cell, now, meSeat, view.anim || {});
     ctx.restore();

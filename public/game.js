@@ -25,8 +25,8 @@
   //   panic    = chance, each time a bot is in danger, that it runs a random way instead of to safety
   //   reckless = chance a bot drops a bomb without checking it can get away
   const DIFF = {
-    easy:   { think: 500, mistake: 0.5,  hunt: false, aim: 0,   careless: 0.08, panic: 0.05, reckless: 0.06 },
-    medium: { think: 340, mistake: 0.25, hunt: true,  aim: 0.3, careless: 0.05, panic: 0.03, reckless: 0.04 },
+    easy:   { think: 500, mistake: 0.4,  hunt: false, aim: 0,   careless: 0.08, panic: 0.05, reckless: 0.03 },
+    medium: { think: 340, mistake: 0.25, hunt: true,  aim: 0.3, careless: 0.02, panic: 0.01, reckless: 0.01 },
     hard:   { think: 90,  mistake: 0,    hunt: true,  aim: 1,   careless: 0,    panic: 0,    reckless: 0 },
   };
 
@@ -127,7 +127,7 @@
     }));
     return {
       mode, difficulty, layout, grid: makeGrid(layout), players,
-      bombs: [], explosions: [], powerups: [], anim: {},
+      bombs: [], explosions: [], powerups: [], anim: {}, nextBombId: 1,
       status: 'ready', readyUntil: now + 1800, goUntil: 0, endAt: 0, winner: null,
       shrinkAt: now + 1800 + ROUND_MS, shrinkPos: 0, hurryUntil: 0, wallVer: 0,
     };
@@ -148,13 +148,59 @@
     else p.range = Math.min(LIMITS.blast, p.range + 1);
   }
 
+  /* ---- Holding / pushing a bomb ----
+     Hold the bomb button and your newest bomb rides one tile ahead of you: it swings round when
+     you turn and is pushed along when you walk. Let go (or it can't fit anywhere) and it stays put. */
+  const heldBomb = (G, p) => G.bombs.find((b) => b.heldBy === p.seat);
+  // A tile a bomb can be moved onto: open floor, no other bomb, nobody standing there.
+  const bombFree = (G, x, y) => inBounds(x, y) && G.grid[idx(x, y)] === FLOOR && !bombAt(G, x, y)
+    && !G.players.some((o) => o.alive && o.x === x && o.y === y);
+  function moveBomb(b, x, y) { b.x = x; b.y = y; }
+
+  function setHold(G, p, on) {
+    if (!p || !p.alive) return;
+    const cur = heldBomb(G, p);
+    if (!on) { if (cur) cur.heldBy = null; return; }
+    if (cur) return;
+    const b = G.bombs.find((x) => x.id === p.lastBombId);
+    if (!b || Math.abs(b.x - p.x) + Math.abs(b.y - p.y) > 1) return;
+    b.heldBy = p.seat;
+    swingHeld(G, p);
+  }
+
+  // Put the held bomb on the tile in front of you, if there's room.
+  function swingHeld(G, p) {
+    const b = heldBomb(G, p);
+    if (!b) return;
+    const fx = p.x + DIRS[p.facing][0], fy = p.y + DIRS[p.facing][1];
+    if (b.x === fx && b.y === fy) return;
+    if (bombFree(G, fx, fy)) moveBomb(b, fx, fy);
+  }
+
+  function face(G, p, dir) {
+    if (p.facing === dir) return;
+    p.facing = dir;
+    swingHeld(G, p);
+  }
+
   function tryMove(G, p, dir, now, slack = 0) {
     if (!p.alive || G.status !== 'playing' || !DIRS[dir]) return false;
-    p.facing = dir;
+    face(G, p, dir);
     if (now - p.lastMove < moveCooldown(p) - slack) return false;
     const [dx, dy] = DIRS[dir];
     const nx = p.x + dx, ny = p.y + dy;
-    if (!walkable(G, nx, ny)) return false;
+    const held = heldBomb(G, p);
+    if (held && held.x === nx && held.y === ny) {
+      // Push the bomb ahead; a wall, crate, bomb or player behind it stops you.
+      if (!bombFree(G, nx + dx, ny + dy)) return false;
+      moveBomb(held, nx + dx, ny + dy);
+    } else {
+      if (!walkable(G, nx, ny)) return false;
+      if (held) {
+        if (bombFree(G, nx + dx, ny + dy) || (held.x === nx + dx && held.y === ny + dy)) moveBomb(held, nx + dx, ny + dy);
+        else held.heldBy = null; // no room ahead: you let go of it
+      }
+    }
     G.anim[p.seat] = { from: { x: p.x, y: p.y }, t0: now };
     p.x = nx; p.y = ny; p.lastMove = now;
     const k = G.powerups.findIndex((u) => u.x === nx && u.y === ny);
@@ -179,7 +225,7 @@
   function moveHuman(G, p, now) {
     const dir = assistDir((x, y, d) => canStep(G, x, y, d), p.x, p.y, p.input, p.moveDir);
     if (tryMove(G, p, dir, now)) p.moveDir = dir;
-    else if (now - p.lastMove >= moveCooldown(p)) { p.facing = p.input; if (dir === p.input) p.moveDir = null; }
+    else if (now - p.lastMove >= moveCooldown(p)) { face(G, p, p.input); if (dir === p.input) p.moveDir = null; }
   }
 
   // Online input: queue one tile step (or a bomb) in the order the player did them, so a bomb is
@@ -189,13 +235,21 @@
     if (!p || !p.alive || G.status !== 'playing') return;
     p.steps = p.steps || [];
     p.steps.push(action);
-    while (p.steps.length > 4) p.ack = p.steps.shift().seq; // never fall far behind
+    // Never fall far behind: drop old moves, but still carry out bomb / hold presses.
+    while (p.steps.length > 6) {
+      const x = p.steps.shift();
+      p.ack = x.seq;
+      if (x.bomb) placeBomb(G, p);
+      else if ('hold' in x) setHold(G, p, x.hold);
+    }
   }
 
   function placeBomb(G, p) {
     if (!p || !p.alive || G.status !== 'playing') return false;
     if (bombAt(G, p.x, p.y) || activeBombs(G, p) >= p.maxBombs) return false;
-    G.bombs.push({ x: p.x, y: p.y, owner: p.seat, range: p.range, left: FUSE_MS });
+    const id = G.nextBombId++;
+    G.bombs.push({ id, x: p.x, y: p.y, owner: p.seat, range: p.range, left: FUSE_MS, heldBy: null });
+    p.lastBombId = id;
     return true;
   }
 
@@ -254,6 +308,7 @@
           // Online: the phone sends one message per tile (see queueStep).
           const s = p.steps[0];
           if (s.bomb) { p.steps.shift(); p.ack = s.seq; placeBomb(G, p); }
+          else if ('hold' in s) { p.steps.shift(); p.ack = s.seq; setHold(G, p, s.hold); }
           else if (now - p.lastMove >= moveCooldown(p) - STEP_SLACK) {
             p.steps.shift();
             p.ack = s.seq;
@@ -366,7 +421,7 @@
         speed: p.speed, maxBombs: p.maxBombs, range: p.range, isBot: p.isBot, ack: p.ack || 0,
         skin: p.skin, bombFx: p.bombFx, crates: p.crates, kills: p.kills,
       })),
-      bombs: G.bombs.map((b) => ({ x: b.x, y: b.y, owner: b.owner, left: Math.round(b.left) })),
+      bombs: G.bombs.map((b) => ({ id: b.id, x: b.x, y: b.y, owner: b.owner, left: Math.round(b.left), held: b.heldBy })),
       explosions: G.explosions.map((e) => ({ x: e.x, y: e.y, owner: e.owner, left: Math.round(e.left) })),
       powerups: G.powerups.map((u) => ({ x: u.x, y: u.y, kind: u.kind })),
     };
@@ -531,7 +586,7 @@
 
   const api = {
     COLS, ROWS, FLOOR, WALL, BOX, BLAST_MS, STEP_ANIM, FUSE_MS, MAX_PLAYERS, DIRS, COLORS, DIFF,
-    createGame, step, tryMove, placeBomb, queueStep, assistDir, moveCooldown, forfeit, snapshot, gridString, activeBombs,
+    createGame, step, tryMove, placeBomb, queueStep, assistDir, moveCooldown, setHold, forfeit, snapshot, gridString, activeBombs,
     LAYOUTS, LAYOUT_IDS, makeGrid, placements, upcomingShrink, shrinkWarning, ROUND_MS, SHRINK_MS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

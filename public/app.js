@@ -1,6 +1,6 @@
 // Bomb Room client: menus, online lobby, input, and the render loop.
 (function () {
-  const APP_VERSION = '13'; // shown at the bottom of the menu; bump with each update
+  const APP_VERSION = '14'; // shown at the bottom of the menu; bump with each update
   const BG = window.BombGame;
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');
@@ -544,24 +544,47 @@
   function resetPrediction() {
     pred.pending = []; pred.lastStep = -1e9; pred.moveDir = null; pred.shown = null;
   }
+  // Your own held bomb is ignored here: it moves with you (see predictedPos).
   function onlineWalkable(x, y) {
     const s = net.snap;
     if (!net.grid || x < 0 || y < 0 || x >= BG.COLS || y >= BG.ROWS) return false;
     if (net.grid[y * BG.COLS + x] !== BG.FLOOR) return false;
-    return !s.bombs.some((b) => b.x === x && b.y === y);
+    return !s.bombs.some((b) => b.x === x && b.y === y && b.held !== meSeat);
   }
-  const onlineCan = (x, y, d) => onlineWalkable(x + BG.DIRS[d][0], y + BG.DIRS[d][1]);
-  // Server position + the steps it hasn't answered yet.
+  function bombRoom(x, y) {
+    if (!onlineWalkable(x, y)) return false;
+    return !net.snap.players.some((o, i) => i !== meSeat && o.alive && o.x === x && o.y === y);
+  }
+  // Can you step from (x, y) in direction d, given where your held bomb is (hb)?
+  function canWith(hb) {
+    return (x, y, d) => {
+      const tx = x + BG.DIRS[d][0], ty = y + BG.DIRS[d][1];
+      if (hb && hb.x === tx && hb.y === ty) return bombRoom(tx + BG.DIRS[d][0], ty + BG.DIRS[d][1]);
+      return onlineWalkable(tx, ty);
+    };
+  }
+  // Server position + the steps (and held-bomb pushes) it hasn't answered yet, replayed on top.
   function predictedPos() {
     const me = net.snap && net.snap.players[meSeat];
     if (!me) return null;
     pred.pending = pred.pending.filter((p) => p.seq > me.ack);
     let x = me.x, y = me.y;
+    const sb = net.snap.bombs.find((b) => b.held === meSeat);
+    let hb = sb ? { x: sb.x, y: sb.y } : null;
     for (const p of pred.pending) {
-      if (p.dir && onlineCan(x, y, p.dir)) { x += BG.DIRS[p.dir][0]; y += BG.DIRS[p.dir][1]; }
+      if (!p.dir) continue;
+      const [dx, dy] = BG.DIRS[p.dir];
+      if (!canWith(hb)(x, y, p.dir)) continue;
+      x += dx; y += dy;
+      if (hb) {
+        const bx = x + dx, by = y + dy;
+        if ((hb.x === bx && hb.y === by) || bombRoom(bx, by)) hb = { x: bx, y: by };
+        else hb = null;
+      }
     }
-    return { x, y, facing: pred.moveDir || me.facing };
+    return { x, y, facing: pred.moveDir || me.facing, hb };
   }
+  const onlineCan = (x, y, d) => { const pos = predictedPos(); return canWith(pos && pos.hb)(x, y, d); };
   function predictionTick(now) {
     const s = net.snap;
     const me = s && s.players[meSeat];
@@ -588,12 +611,44 @@
       net.anim[meSeat] = dist === 1 ? { from: { x: pred.shown.x, y: pred.shown.y }, t0: now } : null;
     }
     pred.shown = { x: pos.x, y: pos.y };
-    return players.map((p) => (p === me ? Object.assign({}, p, pos) : p));
+    return players.map((p) => (p === me ? Object.assign({}, p, { x: pos.x, y: pos.y, facing: pos.facing }) : p));
+  }
+  // Draw your held bomb where your phone thinks it is (in step with your predicted position).
+  function bombsWithPrediction(bombs) {
+    const pos = predictedPos();
+    if (!pos || !pos.hb) return bombs;
+    return bombs.map((b) => (b.held === meSeat ? Object.assign({}, b, { x: pos.hb.x, y: pos.hb.y }) : b));
   }
 
   // Offline modes read held directions straight from held; online movement goes through
   // predictionTick (one message per tile), so nothing needs sending here.
   function syncInput() {}
+  // Hold the bomb button to push the bomb ahead of you; a quick tap just drops it.
+  const HOLD_MS = 200;
+  const holdState = { 0: { timer: null, on: false }, 1: { timer: null, on: false } };
+  function setHoldOn(seat, on) {
+    const h = holdState[seat];
+    if (h.on === on) return;
+    h.on = on;
+    if (kind === 'online') {
+      pred.seq++;
+      pred.pending.push({ seq: pred.seq, hold: on });
+      netSend({ type: 'hold', on, seq: pred.seq });
+    } else if (G) BG.setHold(G, G.players[seat], on);
+    if (on && navigator.vibrate) { try { navigator.vibrate(8); } catch (e) {} }
+  }
+  function bombDown(seat) {
+    doBomb(seat);
+    const h = holdState[seat];
+    clearTimeout(h.timer);
+    h.timer = setTimeout(() => setHoldOn(seat, true), HOLD_MS);
+  }
+  function bombUp(seat) {
+    const h = holdState[seat];
+    clearTimeout(h.timer);
+    setHoldOn(seat, false);
+  }
+
   function doBomb(seat) {
     if (kind === 'online') {
       pred.seq++;
@@ -629,13 +684,14 @@
     if (!b) return;
     e.preventDefault();
     if (b.dir) press(b.seat, b.dir);
-    else if (!e.repeat && !overlayShown) doBomb(b.seat);
+    else if (!e.repeat && !overlayShown) bombDown(b.seat);
   });
   window.addEventListener('keyup', (e) => {
     const b = binding(e.key);
     if (b && b.dir) release(b.seat, b.dir);
+    if (b && b.bomb) bombUp(b.seat);
   });
-  window.addEventListener('blur', clearHeld);
+  window.addEventListener('blur', () => { clearHeld(); bombUp(0); bombUp(1); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) clearHeld();
     else if (!net.ws && serverUrl()) { net.retry = 0; connect(); }
@@ -704,7 +760,13 @@
   ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((t) => zone.addEventListener(t, (e) => {
     if (e.pointerId === stickId) resetStick();
   }));
-  $('bombBtn').addEventListener('pointerdown', (e) => { e.preventDefault(); doBomb(0); });
+  const bombBtn = $('bombBtn');
+  bombBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { bombBtn.setPointerCapture(e.pointerId); } catch (err) {}
+    bombDown(0);
+  });
+  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((t) => bombBtn.addEventListener(t, () => bombUp(0)));
 
   /* ---------------- HUD & banner ---------------- */
   let hudSig = '';
@@ -791,7 +853,7 @@
         view = {
           grid: net.grid,
           players: playersWithPrediction(s.players, now),
-          bombs: s.bombs.map((b) => ({ x: b.x, y: b.y, owner: b.owner, left: b.left - age })),
+          bombs: bombsWithPrediction(s.bombs.map((b) => ({ id: b.id, x: b.x, y: b.y, owner: b.owner, held: b.held, left: b.left - age }))),
           explosions: s.explosions.map((e) => ({ x: e.x, y: e.y, owner: e.owner, left: e.left - age })),
           powerups: s.powerups,
           anim: net.anim,
@@ -828,7 +890,8 @@
         else setBanner('');
         const me = view.players[meSeat];
         const mine = me ? view.bombs.filter((b) => b.owner === meSeat).length : 0;
-        $('bombBtn').disabled = !(me && me.alive && status === 'playing' && mine < me.maxBombs);
+        // Dimmed, not disabled: a disabled button stops reporting when your finger lifts off it.
+        $('bombBtn').classList.toggle('dim', !(me && me.alive && status === 'playing' && (mine < me.maxBombs || holdState[0].on)));
       } else {
         setBanner(kind === 'online' ? 'Loading match…' : '', true);
       }
