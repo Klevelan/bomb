@@ -17,12 +17,13 @@
   const LIMITS = { speed: 4, bombs: 6, blast: 8 };
   const KINDS = ['speed', 'bombs', 'blast'];
 
-  // Bot tuning: think = ms between decisions, mistake = chance of a random step,
-  // hunt = whether bots deliberately bomb other players.
+  // Bot tuning: think = ms between decisions (bots only move when they think, so this is also
+  // their speed), mistake = chance of a random step instead of a smart one, hunt = whether they
+  // chase and bomb players at all, aim = chance they take a shot at a player when one lines up.
   const DIFF = {
-    easy:   { think: 380, mistake: 0.22, hunt: false },
-    medium: { think: 200, mistake: 0.06, hunt: true },
-    hard:   { think: 90,  mistake: 0,    hunt: true },
+    easy:   { think: 500, mistake: 0.3,  hunt: false, aim: 0 },
+    medium: { think: 340, mistake: 0.15, hunt: true,  aim: 0.3 },
+    hard:   { think: 90,  mistake: 0,    hunt: true,  aim: 1 },
   };
 
   const idx = (x, y) => y * COLS + x;
@@ -490,7 +491,10 @@
 
     // 3. Bomb here if it hits something and there's a way out.
     const canBomb = activeBombs(G, p) < p.maxBombs && !bombAt(G, p.x, p.y);
-    if (canBomb && bombValue(G, p, p.x, p.y, cfg) > 0 && canEscape(G, p, cd)) {
+    // Crates are always worth a bomb; a player in line only sometimes (see aim).
+    const hitsCrate = bombValue(G, p, p.x, p.y, { hunt: false }) > 0;
+    const hitsPlayer = !hitsCrate && bombValue(G, p, p.x, p.y, cfg) > 0;
+    if (canBomb && (hitsCrate || (hitsPlayer && Math.random() < cfg.aim)) && canEscape(G, p, cd)) {
       placeBomb(G, p);
       return;
     }
