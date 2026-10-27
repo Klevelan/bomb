@@ -25,7 +25,7 @@
   //   panic    = chance, each time a bot is in danger, that it runs a random way instead of to safety
   //   reckless = chance a bot drops a bomb without checking it can get away
   const DIFF = {
-    easy:   { think: 500, mistake: 0.5,  hunt: false, aim: 0,   careless: 0.1, panic: 0.08, reckless: 0.08 },
+    easy:   { think: 500, mistake: 0.5,  hunt: false, aim: 0,   careless: 0.08, panic: 0.05, reckless: 0.06 },
     medium: { think: 340, mistake: 0.25, hunt: true,  aim: 0.3, careless: 0.05, panic: 0.03, reckless: 0.04 },
     hard:   { think: 90,  mistake: 0,    hunt: true,  aim: 1,   careless: 0,    panic: 0,    reckless: 0 },
   };
