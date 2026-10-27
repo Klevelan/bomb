@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
 <title>Bomb Room</title>
 <meta name="description" content="Fast bomb-dropping arena game. Play online with friends, against bots, or two players on one keyboard." />
 <meta name="theme-color" content="#080B10" />
@@ -29,6 +29,10 @@
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
   input { user-select: text; -webkit-user-select: text; }
+  /* No zooming: scrolling screens may only pan; the game screen takes no browser gestures at all. */
+  html, body, .screen, .screen * { touch-action: pan-x pan-y; }
+  .game, .game * { touch-action: none; }
+  input { touch-action: manipulation; }
   .glow { position: fixed; inset: 0; pointer-events: none; opacity: .4;
     background: radial-gradient(circle at 50% 0%, rgba(255,122,77,.16), transparent 55%); }
   .screen { position: relative; z-index: 1; height: 100%; display: flex; flex-direction: column; }

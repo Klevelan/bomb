@@ -937,6 +937,24 @@
     el.innerHTML = `<span class="${cls}">${res.delta >= 0 ? '+' : ''}${res.delta}</span> ranked points · ${res.rating} <span style="color:${t.color}">${t.name}</span> · #${res.position}`;
   }
 
+  /* ---------------- No browser zoom ----------------
+     iPhone Safari ignores "user-scalable=no", so block double-tap and pinch zoom here too. */
+  // Only a second tap on the same spot counts as a double-tap; quick taps on different buttons work.
+  let lastTap = { t: 0, x: 0, y: 0 };
+  document.addEventListener('touchend', (e) => {
+    const touch = e.changedTouches && e.changedTouches[0];
+    if (!touch) return;
+    const t = Date.now();
+    const near = Math.hypot(touch.clientX - lastTap.x, touch.clientY - lastTap.y) < 40;
+    if (t - lastTap.t < 350 && near && !e.target.closest('input, textarea')) e.preventDefault();
+    lastTap = { t, x: touch.clientX, y: touch.clientY };
+  }, { passive: false });
+  for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+  }
+  document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+  document.addEventListener('dblclick', (e) => e.preventDefault());
+
   /* ---------------- Start up ---------------- */
   const params = new URLSearchParams(location.search);
   const roomParam = (params.get('room') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
