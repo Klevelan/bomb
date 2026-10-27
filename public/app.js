@@ -1,6 +1,6 @@
 // Bomb Room client: menus, online lobby, input, and the render loop.
 (function () {
-  const APP_VERSION = '12'; // shown at the bottom of the menu; bump with each update
+  const APP_VERSION = '13'; // shown at the bottom of the menu; bump with each update
   const BG = window.BombGame;
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');

@@ -20,10 +20,14 @@
   // Bot tuning: think = ms between decisions (bots only move when they think, so this is also
   // their speed), mistake = chance of a random step instead of a smart one, hunt = whether they
   // chase and bomb players at all, aim = chance they take a shot at a player when one lines up.
+  // Blunders (real mistakes that can get a bot killed):
+  //   careless = share of random steps that ignore blast paths (can walk into danger)
+  //   panic    = chance, each time a bot is in danger, that it runs a random way instead of to safety
+  //   reckless = chance a bot drops a bomb without checking it can get away
   const DIFF = {
-    easy:   { think: 500, mistake: 0.4,  hunt: false, aim: 0 },
-    medium: { think: 340, mistake: 0.25, hunt: true,  aim: 0.3 },
-    hard:   { think: 90,  mistake: 0,    hunt: true,  aim: 1 },
+    easy:   { think: 500, mistake: 0.4,  hunt: false, aim: 0,   careless: 0.08, panic: 0.05, reckless: 0.03 },
+    medium: { think: 340, mistake: 0.25, hunt: true,  aim: 0.3, careless: 0.02, panic: 0.01, reckless: 0.01 },
+    hard:   { think: 90,  mistake: 0,    hunt: true,  aim: 1,   careless: 0,    panic: 0,    reckless: 0 },
   };
 
   const idx = (x, y) => y * COLS + x;
@@ -283,6 +287,7 @@
       if (e) {
         p.alive = false;
         p.diedAt = now;
+        p.killedBy = e.owner;
         const killer = G.players[e.owner];
         if (killer && killer !== p) killer.kills++;
       }
@@ -467,8 +472,12 @@
     const danger = dangerMap(G, G.bombs);
     const here = idx(p.x, p.y);
 
-    // 1. In a blast path: run to the nearest safe tile.
+    const openSteps = DIR_LIST.filter((d) => walkable(G, p.x + DIRS[d][0], p.y + DIRS[d][1]));
+    const randomStep = (list) => { if (list.length) tryMove(G, p, list[(Math.random() * list.length) | 0], now); };
+
+    // 1. In a blast path: run to the nearest safe tile (easier bots sometimes panic instead).
     if (danger[here] !== Infinity) {
+      if (Math.random() < cfg.panic) { randomStep(openSteps); return; }
       const r = bfs(G, p, danger, cd, false);
       const target = r.order.find((i) => i !== here && danger[i] === Infinity);
       if (target !== undefined) { tryMove(G, p, r.first[target], now); return; }
@@ -483,9 +492,9 @@
       return walkable(G, p.x + dx, p.y + dy) && danger[idx(p.x + dx, p.y + dy)] === Infinity;
     });
 
-    // 2. Occasional fumble (easier bots).
+    // 2. Occasional fumble (easier bots). Careless ones don't look where they're going.
     if (Math.random() < cfg.mistake) {
-      if (safeSteps.length) tryMove(G, p, safeSteps[(Math.random() * safeSteps.length) | 0], now);
+      randomStep(Math.random() < cfg.careless ? openSteps : safeSteps);
       return;
     }
 
@@ -494,7 +503,8 @@
     // Crates are always worth a bomb; a player in line only sometimes (see aim).
     const hitsCrate = bombValue(G, p, p.x, p.y, { hunt: false }) > 0;
     const hitsPlayer = !hitsCrate && bombValue(G, p, p.x, p.y, cfg) > 0;
-    if (canBomb && (hitsCrate || (hitsPlayer && Math.random() < cfg.aim)) && canEscape(G, p, cd)) {
+    if (canBomb && (hitsCrate || (hitsPlayer && Math.random() < cfg.aim))
+        && (Math.random() < cfg.reckless || canEscape(G, p, cd))) {
       placeBomb(G, p);
       return;
     }
