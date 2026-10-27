@@ -9,6 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const Game = require('../public/game.js');
+const Cosmetics = require('../public/cosmetics.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -81,6 +82,15 @@ function cleanName(name) {
   return s || 'Player';
 }
 
+function cleanLook(look) {
+  const l = look && typeof look === 'object' ? look : {};
+  return {
+    skin: Cosmetics.valid('skin', l.skin) ? l.skin : 'classic',
+    bomb: Cosmetics.valid('bomb', l.bomb) ? l.bomb : 'classic',
+  };
+}
+const randomSkin = () => Cosmetics.SKINS[crypto.randomInt(Cosmetics.SKINS.length)].id;
+
 function newCode() {
   let code;
   do {
@@ -141,10 +151,10 @@ function updateQuick(room) {
 function addMember(room, id, name, ws) {
   let m = room.members.get(id);
   if (!m) {
-    m = { id, name, ws, connected: true, disconnectedAt: null, seat: null, sentGrid: null };
+    m = { id, name, ws, connected: true, disconnectedAt: null, seat: null, sentGrid: null, look: ws.look || cleanLook() };
     room.members.set(id, m);
   } else {
-    Object.assign(m, { name, ws, connected: true, disconnectedAt: null, sentGrid: null });
+    Object.assign(m, { name, ws, connected: true, disconnectedAt: null, sentGrid: null, look: ws.look || m.look });
   }
   if (!room.hostId || !room.members.has(room.hostId)) room.hostId = id;
   const c = clients.get(id);
@@ -177,10 +187,10 @@ function leaveCurrent(id) {
 
 function startRound(room) {
   const humans = connectedMembers(room).slice(0, Game.MAX_PLAYERS);
-  const seats = humans.map((m) => ({ name: m.name, isBot: false }));
+  const seats = humans.map((m) => ({ name: m.name, isBot: false, skin: m.look.skin, bomb: m.look.bomb }));
   if (room.fillBots) {
     let n = 1;
-    while (seats.length < Game.MAX_PLAYERS) seats.push({ name: `Bot ${n++}`, isBot: true });
+    while (seats.length < Game.MAX_PLAYERS) seats.push({ name: `Bot ${n++}`, isBot: true, skin: randomSkin() });
   }
   if (seats.length < 2) return 'Need at least 2 players, or turn on bots.';
   for (const m of room.members.values()) { m.seat = null; m.sentGrid = null; }
@@ -188,6 +198,7 @@ function startRound(room) {
   const t = now();
   room.game = Game.createGame({ mode: 'online', difficulty: room.difficulty, seats, now: t });
   room.phase = 'playing';
+  room.round = (room.round || 0) + 1;
   room.lastTick = t;
   room.autoStartAt = null;
   broadcastRoom(room);
@@ -219,6 +230,7 @@ function handle(ws, msg) {
     const id = typeof msg.id === 'string' && /^[\w-]{8,64}$/.test(msg.id) ? msg.id : crypto.randomUUID();
     ws.clientId = id;
     ws.name = cleanName(msg.name);
+    ws.look = cleanLook(msg.look);
     const prev = clients.get(id);
     if (prev && prev.ws && prev.ws !== ws) { prev.ws.replaced = true; prev.ws.close(4000, 'replaced'); }
     clients.set(id, { ws, roomCode: prev ? prev.roomCode : null });
@@ -238,6 +250,11 @@ function handle(ws, msg) {
     case 'name':
       ws.name = cleanName(msg.name);
       if (member && room.phase !== 'playing') { member.name = ws.name; broadcastRoom(room); }
+      break;
+
+    case 'look':
+      ws.look = cleanLook(msg);
+      if (member) member.look = ws.look; // used from the next round
       break;
 
     case 'create': {
@@ -381,7 +398,7 @@ setInterval(() => {
     const grid = Game.gridString(G);
     for (const m of room.members.values()) {
       if (!m.connected) continue;
-      const msg = { type: 'state', ...snap, you: m.seat };
+      const msg = { type: 'state', ...snap, round: room.round, you: m.seat };
       if (m.sentGrid !== grid) { msg.grid = grid; m.sentGrid = grid; }
       send(m.ws, msg);
     }
