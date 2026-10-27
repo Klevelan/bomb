@@ -158,6 +158,47 @@
     ctx.closePath();
   }
 
+  // A flame tongue standing on (x, baseY): w wide, h tall, tip swaying sideways by sway.
+  function flame(ctx, x, baseY, w, h, sway, alpha, hot) {
+    if (h <= 0 || alpha <= 0) return;
+    const shape = (ww, hh) => {
+      ctx.beginPath();
+      ctx.moveTo(x - ww / 2, baseY);
+      ctx.bezierCurveTo(x - ww / 2, baseY - hh * 0.45, x + sway * 0.4 - ww * 0.15, baseY - hh * 0.7, x + sway, baseY - hh);
+      ctx.bezierCurveTo(x + sway * 0.4 + ww * 0.15, baseY - hh * 0.7, x + ww / 2, baseY - hh * 0.45, x + ww / 2, baseY);
+      ctx.quadraticCurveTo(x, baseY + ww * 0.45, x - ww / 2, baseY);
+      ctx.closePath();
+    };
+    const g = ctx.createLinearGradient(x, baseY, x, baseY - h);
+    g.addColorStop(0, `rgba(255,190,60,${alpha})`);
+    g.addColorStop(0.5, `rgba(255,100,25,${alpha * 0.95})`);
+    g.addColorStop(1, `rgba(200,30,10,0)`);
+    shape(w, h); ctx.fillStyle = g; ctx.fill();
+    if (hot) {
+      const gi = ctx.createLinearGradient(x, baseY, x, baseY - h * 0.6);
+      gi.addColorStop(0, `rgba(255,255,220,${alpha})`);
+      gi.addColorStop(1, `rgba(255,220,90,0)`);
+      shape(w * 0.5, h * 0.6); ctx.fillStyle = gi; ctx.fill();
+    }
+  }
+
+  // A gold coin seen from slightly above; spin = 0..1 squashes it as if turning.
+  function coin(ctx, cx, cy, r, spin, alpha) {
+    if (alpha <= 0) return;
+    const sx = Math.max(0.15, Math.abs(Math.cos(spin * Math.PI)));
+    ctx.save();
+    ctx.translate(cx, cy); ctx.scale(sx, 0.78);
+    ctx.beginPath(); ctx.arc(0, r * 0.18, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(150,95,15,${alpha})`; ctx.fill();            // edge
+    const g = ctx.createRadialGradient(-r * 0.3, -r * 0.35, r * 0.1, 0, 0, r);
+    g.addColorStop(0, `rgba(255,248,200,${alpha})`); g.addColorStop(0.55, `rgba(245,195,70,${alpha})`); g.addColorStop(1, `rgba(190,130,25,${alpha})`);
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, r * 0.66, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(170,110,20,${alpha * 0.8})`; ctx.lineWidth = Math.max(0.8, r * 0.14); ctx.stroke();
+    ctx.restore();
+  }
+
   // A jagged line from (x1,y1) to (x2,y2) for lightning.
   function bolt(ctx, x1, y1, x2, y2, jitter, seed) {
     ctx.beginPath();
@@ -264,6 +305,30 @@
         ctx.fillStyle = '#FFFFFF'; ctx.fill();
         ctx.restore();
       }
+      return;
+    }
+
+    if (style === 'fire') {
+      // Charred ball with glowing lava cracks and a little flame on top
+      const g = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.35, r * 0.1, cx, cy, r);
+      g.addColorStop(0, '#5A2418'); g.addColorStop(0.6, '#2A0E08'); g.addColorStop(1, '#120503');
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = g; ctx.fill();
+      ctx.restore();
+      const glow = 0.6 + 0.4 * Math.sin(now / 110);
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+      ctx.strokeStyle = `rgba(255,${120 + 60 * glow | 0},40,${0.75 + 0.25 * glow})`;
+      ctx.lineWidth = Math.max(1, cell * 0.035); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.shadowColor = '#FF6A1F'; ctx.shadowBlur = cell * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(cx - r * 0.7, cy - r * 0.1); ctx.lineTo(cx - r * 0.25, cy + r * 0.05); ctx.lineTo(cx - r * 0.05, cy + r * 0.5); ctx.lineTo(cx + r * 0.2, cy + r * 0.85);
+      ctx.moveTo(cx - r * 0.25, cy + r * 0.05); ctx.lineTo(cx + r * 0.3, cy - r * 0.2); ctx.lineTo(cx + r * 0.75, cy - r * 0.05);
+      ctx.moveTo(cx + r * 0.3, cy - r * 0.2); ctx.lineTo(cx + r * 0.15, cy - r * 0.7);
+      ctx.stroke();
+      ctx.restore();
+      const fl = 1 + 0.18 * Math.sin(now / 55) + 0.1 * Math.sin(now / 23);
+      flame(ctx, cx + r * 0.5, cy - r * 0.72, r * 0.42, r * 0.85 * fl, Math.sin(now / 90) * r * 0.15, 1, true);
       return;
     }
 
@@ -392,6 +457,28 @@
       return;
     }
 
+    if (style === 'fire') {
+      blastBase(ctx, cx, cy, s, cell, ['255,220,140', '255,110,30', '170,30,10'], a * 0.7);
+      // flickering flame tongues standing on the tile
+      const grow = t < 0.18 ? t / 0.18 : 1 - (t - 0.18) * 0.55;
+      const base = cy + cell * 0.32;
+      for (let k = 0; k < 4; k++) {
+        const fx0 = cx + (k - 1.5) * cell * 0.2 + (rnd(e.x, e.y, k) - 0.5) * cell * 0.08;
+        const fl = 0.8 + 0.2 * Math.sin(now / 45 + k * 1.9 + e.x) + 0.08 * Math.sin(now / 19 + k);
+        const h = cell * (0.5 + 0.35 * rnd(e.x, e.y, k + 7)) * grow * fl;
+        flame(ctx, fx0, base, cell * 0.26, h, Math.sin(now / 80 + k * 2 + e.y) * cell * 0.08, a, k === 1 || k === 2);
+      }
+      // embers drifting up
+      for (let k = 0; k < 4; k++) {
+        const et = (t * 1.3 + rnd(e.x, e.y, k + 20)) % 1;
+        const ex = cx + (rnd(e.x, e.y, k + 30) - 0.5) * cell * 0.8 + Math.sin(now / 120 + k) * cell * 0.05;
+        const ey = cy + cell * 0.2 - et * cell * 0.8;
+        ctx.beginPath(); ctx.arc(ex, ey, Math.max(1, cell * 0.035 * (1 - et)), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,${180 + 60 * (1 - et) | 0},80,${a * (1 - et)})`; ctx.fill();
+      }
+      return;
+    }
+
     if (style === 'gold') {
       blastBase(ctx, cx, cy, s, cell, ['255,252,220', '255,214,90', '214,140,20'], a * 0.85);
       for (let k = 0; k < 6; k++) {
@@ -478,11 +565,43 @@
         bolt(ctx, cx - cell * 0.25, cy, cx + cell * 0.25, cy + (rnd(r.x, seed, 1) - 0.5) * cell * 0.3, cell * 0.4, seed);
         ctx.strokeStyle = `rgba(240,180,255,${a})`; ctx.lineWidth = Math.max(0.8, cell * 0.02); ctx.stroke();
       }
-    } else if (style === 'gold') {
+    } else if (style === 'fire') {
+      // charred ground, glowing embers and the last flames dying out
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.5);
+      g.addColorStop(0, `rgba(20,8,4,${0.6 * a})`); g.addColorStop(0.7, `rgba(40,14,6,${0.35 * a})`); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g; ctx.fillRect(cx - cell / 2, cy - cell / 2, cell, cell);
       for (let i = 0; i < 4; i++) {
-        const tw = Math.max(0, Math.sin(now / 150 + i * 1.7));
-        star(ctx, cx + (rnd(r.x, r.y, i + 70) - 0.5) * cell * 0.8, cy + (rnd(r.x, r.y, i + 80) - 0.5) * cell * 0.8, cell * 0.07 * tw, 4, 0.3);
-        ctx.fillStyle = `rgba(255,225,120,${a})`; ctx.fill();
+        const glow = 0.5 + 0.5 * Math.sin(now / 130 + i * 1.7 + r.x);
+        ctx.beginPath();
+        ctx.arc(cx + (rnd(r.x, r.y, i + 70) - 0.5) * cell * 0.7, cy + (rnd(r.x, r.y, i + 80) - 0.5) * cell * 0.7, Math.max(1, cell * 0.035), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,${110 + 80 * glow | 0},40,${a * (0.5 + 0.5 * glow)})`; ctx.fill();
+      }
+      if (k < 0.55) {
+        const fade = 1 - k / 0.55;
+        for (let i = 0; i < 2; i++) {
+          const fl = 0.75 + 0.25 * Math.sin(now / 50 + i * 2);
+          flame(ctx, cx + (i ? 0.13 : -0.12) * cell, cy + cell * 0.25, cell * 0.17, cell * 0.38 * fade * fl, Math.sin(now / 90 + i) * cell * 0.05, fade, false);
+        }
+      }
+    } else if (style === 'gold') {
+      // coins drop out, bounce, spin and settle, then glint; they stay bright until near the end
+      const elapsed = now - r.t0;
+      const ca = k < 0.75 ? 1 : 1 - (k - 0.75) / 0.25;
+      for (let i = 0; i < 3; i++) {
+        const delay = i * 70;
+        const lt = Math.max(0, elapsed - delay);
+        const px = cx + (rnd(r.x, r.y, i + 70) - 0.5) * cell * 0.62;
+        const py = cy + (rnd(r.x, r.y, i + 80) - 0.5) * cell * 0.5 + cell * 0.05;
+        const drop = Math.max(0, 1 - lt / 260);
+        const bounce = Math.abs(Math.sin((lt / 260) * Math.PI)) * Math.max(0, 1 - lt / 520) * cell * 0.12;
+        const hop = drop * drop * cell * 0.35 + bounce;
+        const spin = lt < 520 ? lt / 130 : 0;
+        coin(ctx, px, py - hop, cell * 0.14, spin, ca);
+        if (lt > 520) {
+          const tw = Math.max(0, Math.sin(now / 140 + i * 2.1));
+          star(ctx, px + cell * 0.06, py - cell * 0.07, cell * 0.075 * tw, 4, 0.3);
+          ctx.fillStyle = `rgba(255,255,230,${ca})`; ctx.fill();
+        }
       }
     } else if (style === 'rainbow') {
       for (let i = 0; i < 6; i++) {

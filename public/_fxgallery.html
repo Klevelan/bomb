@@ -1,0 +1,7 @@
+<!doctype html><html><body style="margin:0;background:#080B10">
+<canvas id="c" width="960" height="300"></canvas>
+<script src="game.js"></script><script src="cosmetics.js"></script><script src="render.js"></script>
+<script>
+const ctx=document.getElementById('c').getContext('2d'); const R=1200+811;
+[R+120,R+400,R+700,R+950].forEach((t,j)=>{ ctx.save(); ctx.translate(20+j*235,40); window.drawPreview(ctx,220,'bomb','gold',t+2900*3); ctx.restore(); });
+</script></body></html>

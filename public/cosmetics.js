@@ -19,6 +19,7 @@
     { id: 'ice', name: 'Ice', price: 150, bomb: '#16324A', rim: '#3D7FB8', spark: '#9FE6FF', blast: ['240,252,255', '120,210,255', '40,110,230'] },
     { id: 'toxic', name: 'Toxic', price: 200, bomb: '#1A2A12', rim: '#4C7A2A', spark: '#B6F24A', blast: ['240,255,200', '150,230,60', '40,140,40'] },
     { id: 'plasma', name: 'Plasma', price: 350, bomb: '#24123A', rim: '#7A3FD1', spark: '#F07CFF', blast: ['255,230,255', '230,110,255', '110,50,230'] },
+    { id: 'fire', name: 'Fire', price: 450, bomb: '#2A0E08', rim: '#E2531F', spark: '#FFB13D', blast: ['255,240,180', '255,130,40', '200,40,20'] },
     { id: 'gold', name: 'Gold', price: 600, bomb: '#3A2A0A', rim: '#D9A321', spark: '#FFE07A', blast: ['255,252,220', '255,214,90', '214,140,20'] },
     { id: 'rainbow', name: 'Rainbow', price: 1000, bomb: '#1B1F2A', rim: '#6A7080', spark: '#FFFFFF', rainbow: true, blast: ['255,255,255', '255,150,70', '226,62,62'] },
   ];
