@@ -1,6 +1,6 @@
 // Bomb Room client: menus, online lobby, input, and the render loop.
 (function () {
-  const APP_VERSION = '14'; // shown at the bottom of the menu; bump with each update
+  const APP_VERSION = '15'; // shown at the bottom of the menu; bump with each update
   const BG = window.BombGame;
   const $ = (id) => document.getElementById(id);
   const canvas = $('canvas');
@@ -849,7 +849,10 @@
         if (G.status === 'over') showLocalResult();
       } else if (kind === 'online' && net.snap) {
         predictionTick(now);
-        const s = net.snap, age = now - net.recvAt;
+        // How long ago the server sent this. The frame clock can be a few ms behind the moment
+        // the message arrived, which would make the age negative (and wake up finished
+        // countdowns like "Go!"), so it never goes below zero.
+        const s = net.snap, age = Math.max(0, now - net.recvAt);
         view = {
           grid: net.grid,
           players: playersWithPrediction(s.players, now),
@@ -860,8 +863,10 @@
           layout: s.layout, wallVer: s.wallVer, round: s.round, shrinkNext: s.shrinkNext,
         };
         status = s.status;
-        readyIn = s.readyIn - age; goIn = s.goIn - age;
-        shrinkIn = s.shrinkIn - age; hurryIn = s.hurryIn - age;
+        // A countdown the server says is finished (0) stays finished.
+        const left = (v) => (v > 0 ? v - age : 0);
+        readyIn = left(s.readyIn); goIn = left(s.goIn); hurryIn = left(s.hurryIn);
+        shrinkIn = s.shrinkIn - age;
       }
 
       const size = canvas.clientWidth;
